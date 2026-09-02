@@ -62,6 +62,7 @@ export const api: PublicApi<Record<string, unknown>> = {
 };
 export { forOrg, forOrgUser, forUser } from "./schema-ownership.ts";
 export { chardb } from "./chardb.ts";
+export { getChardbAuthEnv } from "./auth-runtime-context.ts";
 export { defineMigrations, defineSchemaBaseline } from "./schema-migrations.ts";
 export {
     defineSchemaSnapshot,
