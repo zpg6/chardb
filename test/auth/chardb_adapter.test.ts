@@ -928,6 +928,32 @@ describe("chardbAuthAdapter — Catalog-owned auth storage", () => {
         expect(harness.catalog.authEpoch({ principalId: "user-2" as never }).principal).toBe(4);
     });
 
+    test("consumes a single verification row atomically and returns its stored value", async () => {
+        const adapter = chardbAuthAdapter({ recoveryGeneration: 0, env: { CDB_CATALOG: namespaceFor(harness) } })(
+            auth.options
+        );
+        const now = new Date("2026-08-23T00:00:00Z");
+        await adapter.create({
+            model: "verification",
+            forceAllowId: true,
+            data: {
+                id: "magic-link-token",
+                identifier: "magic@example.com",
+                value: "one-time-secret",
+                expiresAt: now,
+                createdAt: now,
+                updatedAt: now,
+            },
+        });
+
+        await expect(
+            adapter.consumeOne({ model: "verification", where: eq("identifier", "magic@example.com") })
+        ).resolves.toMatchObject({ id: "magic-link-token", value: "one-time-secret" });
+        await expect(
+            adapter.consumeOne({ model: "verification", where: eq("identifier", "magic@example.com") })
+        ).resolves.toBeNull();
+    });
+
     test("keeps empty single-row mutations as no-ops while bulk mutations remain explicit", async () => {
         const adapter = chardbAuthAdapter({ recoveryGeneration: 0, env: { CDB_CATALOG: namespaceFor(harness) } })(
             auth.options

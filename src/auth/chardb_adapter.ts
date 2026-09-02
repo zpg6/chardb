@@ -236,6 +236,15 @@ export function chardbAuthAdapter(opts: ChardbAuthAdapterOptions): AdapterFactor
                     return r.affected ?? 0;
                 },
 
+                async consumeOne({ model, where }) {
+                    const flat = whereToFlat(where);
+                    const r = await callCatalog<CatalogAuthMutationResult>(catalog(), {
+                        operation: "mutate",
+                        args: { model, op: "delete", where: flat, returnRow: true, limitOne: true },
+                    });
+                    return (r.row ?? null) as never;
+                },
+
                 async incrementOne({ model, where, increment, set }) {
                     const defaultModel = canonicalModelFor(model);
                     const defaultField = (field: string): string => canonicalFieldFor(defaultModel, field);

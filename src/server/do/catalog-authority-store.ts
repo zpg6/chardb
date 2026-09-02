@@ -405,10 +405,15 @@ export function mutateCatalogAuthWithEffects(
                   })()
                 : args.where;
             if (!mutationWhere) break;
+            // This path is used by Better Auth's native consumeOne adapter
+            // operation. Catalog serializes the read and delete inside the
+            // same Durable Object transaction, preserving single-use tokens.
+            const fullBefore = args.returnRow ? authFindOne(sql, table, mutationWhere) : null;
             const preloadColumns = args.model === "organization" ? [...new Set([...scopeColumns, "id"])] : scopeColumns;
             const before = authPreloadScopeRows(sql, table, mutationWhere, preloadColumns);
             affected = authDelete(sql, table, mutationWhere).affected;
             if (affected > 0) {
+                row = fullBefore;
                 if (placement.kind === "replicated") addEpochScope(scopes, "global", "global");
                 for (const previous of before.rows) {
                     addRowEpochScopes(scopes, args.model, previous);
