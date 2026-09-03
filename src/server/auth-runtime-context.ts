@@ -26,7 +26,9 @@ type OptionsWithRuntimeEnv = BetterAuthOptions & {
  * `getChardbAuthEnv()` in callbacks.
  */
 export function attachChardbAuthRuntimeEnv(options: BetterAuthOptions, env: ChardbEnv): BetterAuthOptions {
-    return { ...options, [CHARDB_AUTH_RUNTIME_ENV]: env } as OptionsWithRuntimeEnv;
+    const enriched = { ...options } as OptionsWithRuntimeEnv;
+    Object.defineProperty(enriched, CHARDB_AUTH_RUNTIME_ENV, { value: env, enumerable: false });
+    return enriched;
 }
 
 /**
