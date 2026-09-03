@@ -533,7 +533,11 @@ export function collectRunMetadata(environment, startedAt, randomUUID) {
         return value.length === 0 && !allowEmpty ? fallback : value;
     };
     const gitSha = environment.GITHUB_SHA ?? git(["rev-parse", "HEAD"], "unknown");
-    const gitRef = environment.GITHUB_REF ?? git(["symbolic-ref", "--quiet", "--short", "HEAD"], "unknown");
+    // GitHub Actions checks out a detached HEAD. Keep a usable local identity
+    // when callers deliberately omit GitHub metadata (as the test harness does).
+    const gitRef =
+        environment.GITHUB_REF ??
+        git(["symbolic-ref", "--quiet", "--short", "HEAD"], git(["rev-parse", "--short", "HEAD"], "unknown"));
     const gitStatus = git(["status", "--porcelain", "--untracked-files=normal"], "unknown", true);
     const cpus = os.cpus();
     return {

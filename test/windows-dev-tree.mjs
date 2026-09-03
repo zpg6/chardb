@@ -10,7 +10,10 @@ const CHILD_PROCESS_TIMEOUT_MS = 5 * 60_000;
 const FILESYSTEM_CLEANUP_TIMEOUT_MS = 30_000;
 const HTTP_REQUEST_TIMEOUT_MS = 10_000;
 const PROCESS_OUTPUT_TIMEOUT_MS = 5_000;
-const WINDOWS_UTILITY_TIMEOUT_MS = 10_000;
+// Win32_Process enumeration can briefly stall on hosted Windows runners while
+// toolchains are starting or exiting. It remains bounded, but needs enough
+// headroom to avoid treating that transient WMI contention as a dev-server failure.
+const WINDOWS_UTILITY_TIMEOUT_MS = 30_000;
 
 const tarballArgument = process.argv.indexOf("--tarball");
 if (tarballArgument === -1 || !process.argv[tarballArgument + 1]) {
