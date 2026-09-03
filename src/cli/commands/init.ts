@@ -1300,7 +1300,11 @@ async function waitForWorker() {
       try {
         body = await response.json();
       } catch {
-        throw new Error("/health returned invalid JSON");
+        // Wrangler can briefly return a successful response while its Worker
+        // is still replacing the startup listener. Treat that response as a
+        // readiness miss and keep polling within the existing deadline.
+        await Bun.sleep(100);
+        continue;
       }
       if (
         body && typeof body === "object" && body.ok === true && body.deploymentId === deploymentId &&

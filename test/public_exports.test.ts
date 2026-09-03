@@ -27,6 +27,7 @@ describe("published API boundary", () => {
             "forOrg",
             "forOrgUser",
             "forUser",
+            "getChardbAuthEnv",
             "searchVector",
             "vector",
         ]);

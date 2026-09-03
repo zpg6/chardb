@@ -198,6 +198,7 @@ describe("generated tutorial flow", () => {
         expect(dev).toContain('process.env.CHARDB_DEV_URL, "http://127.0.0.1:8787"');
         expect(dev).toContain('process.env.CHARDB_DEV_WEB_URL, "http://127.0.0.1:5173"');
         expect(dev).toContain("process.env.CHARDB_DEV_PERSIST_TO");
+        expect(dev).toContain("// readiness miss and keep polling within the existing deadline.");
         expect(vite).toContain('process.env.CHARDB_DEV_URL, "http://127.0.0.1:8787"');
         expect(vite).toContain('throw new Error(name + " must be a loopback HTTP origin")');
         expect(dev).toContain('throw new Error(name + " must be a loopback HTTP origin")');
