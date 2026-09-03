@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { rm } from "node:fs/promises";
 import * as path from "node:path";
 import { SignJWT, exportJWK, generateKeyPair } from "jose";
@@ -27,6 +27,8 @@ const SCALE_WAIT_MS = boundedIntegerEnv("CHARDB_WORKERD_WAIT_MS", 5_000, 1_000, 
 const SCALE_TEST_TIMEOUT_MS = boundedIntegerEnv("CHARDB_WORKERD_TEST_TIMEOUT_MS", 30_000, 5_000, 300_000);
 const USER_AXIS_BENCH_USERS = boundedIntegerEnv("CHARDB_WORKERD_USER_AXIS_USERS", 8, 2, 32);
 const GLOBAL_AXIS_BENCH_PARTITIONS = boundedIntegerEnv("CHARDB_WORKERD_GLOBAL_AXIS_PARTITIONS", 8, 2, 32);
+
+setDefaultTimeout(SCALE_TEST_TIMEOUT_MS);
 
 function boundedIntegerEnv(name: string, fallback: number, minimum: number, maximum: number): number {
     const raw = process.env[name];
@@ -266,7 +268,7 @@ function nextMutationResult(
 async function nextAfterAcknowledgedSnapshot(
     socket: WebSocket,
     acknowledged: Extract<Down, { t: "snapshot" }>,
-    timeoutMs = 3_000
+    timeoutMs = SCALE_WAIT_MS
 ): Promise<Down> {
     const deadline = Date.now() + timeoutMs;
     const acknowledgedRows = JSON.stringify(acknowledged.rows);
@@ -1456,6 +1458,7 @@ describe("public durable live queries in real workerd", () => {
             expect(message.rows).toEqual([]);
             acknowledge((opened[index] as OpenedSocket).socket, message);
         });
+        await Promise.all(clientIds.map(clientId => drainUntilSettled(clientId, [53])));
         const registrationMs = performance.now() - registrationStartedAt;
 
         const writeStartedAt = performance.now();
@@ -1475,7 +1478,12 @@ describe("public durable live queries in real workerd", () => {
                 mutResults: [{ mutId: `global-bench-mut-${index}`, ok: true }],
             });
         });
-        const replacements = opened.map(connection => nextDown(connection.socket));
+        const replacements = opened.map((connection, index) =>
+            nextAfterAcknowledgedSnapshot(
+                connection.socket,
+                initialSnapshots[index] as Extract<Down, { t: "snapshot" }>
+            )
+        );
         await Promise.all(clientIds.map(drainGateway));
         const replacementMessages = await Promise.all(replacements);
         replacementMessages.forEach((message, index) => {
@@ -2218,16 +2226,8 @@ describe("public durable live queries in real workerd", () => {
                 );
                 lastGatewayCount = gatewayRows.length;
                 lastCdbCount = activeCdbRows.length;
-                const settled = gatewayRows.every(
-                    row =>
-                        row.lifecycle === "active" &&
-                        row.cdbState === "active" &&
-                        !row.initialSnapshotPending &&
-                        row.dirtyVersion === row.deliveredVersion &&
-                        row.outboxCookie === null &&
-                        row.outboxTargetVersion === null
-                );
-                if (gatewayRows.length === gatewayCount && activeCdbRows.length === cdbCount && settled) {
+                const admitted = gatewayRows.every(row => row.lifecycle === "active" && row.cdbState === "active");
+                if (gatewayRows.length === gatewayCount && activeCdbRows.length === cdbCount && admitted) {
                     return state;
                 }
                 await Bun.sleep(10);

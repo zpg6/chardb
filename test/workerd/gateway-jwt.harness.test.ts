@@ -925,7 +925,6 @@ describe("configured Gateway JWT handshake in real workerd", () => {
         }
 
         await setAuthorityFault("hold-throw");
-        const snapshot = nextDown(socket);
         socket.send(
             encodeWire({
                 t: "sub",
@@ -943,6 +942,15 @@ describe("configured Gateway JWT handshake in real workerd", () => {
                 args: { organizationId: "workerd-org", body: "duplicate-second" },
             })
         );
+        // The Catalog release is a separate event source. A later frame proves
+        // the Gateway cancelled the first subscription before that release.
+        const replacementBarrier = nextDown(socket);
+        socket.send("{");
+        await expect(replacementBarrier).resolves.toMatchObject({
+            t: "error",
+            code: "CDB_UNSUPPORTED_FEATURE",
+        });
+        const snapshot = nextDown(socket);
         await authorityControl("/authority-release");
 
         await expect(snapshot).resolves.toMatchObject({
