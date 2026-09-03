@@ -23,8 +23,16 @@ const SCALE_MUTATIONS_PER_TENANT = boundedIntegerEnv("CHARDB_WORKERD_MUTATIONS_P
 const SCALE_MUTATION_BATCH = boundedIntegerEnv("CHARDB_WORKERD_MUTATION_BATCH", 16, 1, 32);
 const SCALE_SUBSCRIPTIONS = boundedIntegerEnv("CHARDB_WORKERD_SUBSCRIPTIONS", 4, 1, 64);
 const SCALE_REFRESH_ROUNDS = boundedIntegerEnv("CHARDB_WORKERD_REFRESH_ROUNDS", 2, 1, 64);
-const SCALE_WAIT_MS = boundedIntegerEnv("CHARDB_WORKERD_WAIT_MS", 5_000, 1_000, 60_000);
-const SCALE_TEST_TIMEOUT_MS = boundedIntegerEnv("CHARDB_WORKERD_TEST_TIMEOUT_MS", 30_000, 5_000, 300_000);
+// Every wait in this file is a bound on a correct outcome, never a duration the
+// product must hit. Hosted runners have run ten times slower than a quiet
+// machine, so the defaults leave that headroom; correctness assertions stay exact.
+const SCALE_WAIT_MS = boundedIntegerEnv("CHARDB_WORKERD_WAIT_MS", 10_000, 1_000, 60_000);
+const SCALE_TEST_TIMEOUT_MS = boundedIntegerEnv("CHARDB_WORKERD_TEST_TIMEOUT_MS", 60_000, 5_000, 300_000);
+// The quota proof settles 256 registrations across four count transitions and
+// snapshots Gateway and Cdb state on every poll. Each settle window is bounded
+// here; the proof's own 180 s timeout (a literal, which the formatter requires)
+// stays above one full window plus the normal run.
+const QUOTA_SETTLE_MS = Math.min(Math.max(SCALE_WAIT_MS * 6, 60_000), 120_000);
 const USER_AXIS_BENCH_USERS = boundedIntegerEnv("CHARDB_WORKERD_USER_AXIS_USERS", 8, 2, 32);
 const GLOBAL_AXIS_BENCH_PARTITIONS = boundedIntegerEnv("CHARDB_WORKERD_GLOBAL_AXIS_PARTITIONS", 8, 2, 32);
 
@@ -143,7 +151,7 @@ async function openSocket(clientId: string, jwt: string, immediate?: Up): Promis
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     const socket = new WebSocket(url);
     await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error("timed out opening Gateway WebSocket")), 2_000);
+        const timeout = setTimeout(() => reject(new Error("timed out opening Gateway WebSocket")), SCALE_WAIT_MS);
         socket.addEventListener(
             "open",
             () => {
@@ -211,7 +219,7 @@ function downInbox(socket: WebSocket): { readonly queued: Down[]; readonly waite
     return inbox;
 }
 
-function nextDown(socket: WebSocket, timeoutMs = 3_000): Promise<Down> {
+function nextDown(socket: WebSocket, timeoutMs = SCALE_WAIT_MS): Promise<Down> {
     const inbox = downInbox(socket);
     const queued = inbox.queued.shift();
     if (queued) return Promise.resolve(queued);
@@ -233,7 +241,7 @@ async function nextDownMatching<T extends Down>(
     socket: WebSocket,
     predicate: (message: Down) => message is T,
     label: string,
-    timeoutMs = 3_000
+    timeoutMs = SCALE_WAIT_MS
 ): Promise<T> {
     const deadline = Date.now() + timeoutMs;
     const skipped: Down[] = [];
@@ -252,7 +260,7 @@ async function nextDownMatching<T extends Down>(
 function nextMutationResult(
     socket: WebSocket,
     mutId: string,
-    timeoutMs = 3_000
+    timeoutMs = SCALE_WAIT_MS
 ): Promise<Extract<Down, { t: "poke" }>> {
     return nextDownMatching(
         socket,
@@ -266,7 +274,7 @@ function nextMutationResult(
 async function nextAfterAcknowledgedSnapshot(
     socket: WebSocket,
     acknowledged: Extract<Down, { t: "snapshot" }>,
-    timeoutMs = 3_000
+    timeoutMs = SCALE_WAIT_MS
 ): Promise<Down> {
     const deadline = Date.now() + timeoutMs;
     const acknowledgedRows = JSON.stringify(acknowledged.rows);
@@ -439,7 +447,7 @@ async function currentRegistration(
     clientId: string,
     subId: number
 ): Promise<GatewayLiveState["registrations"][number]> {
-    const deadline = Date.now() + 3_000;
+    const deadline = Date.now() + SCALE_WAIT_MS;
     while (Date.now() < deadline) {
         const state = await gatewayState(clientId);
         const registration = state.registrations.find(row => row.subId === subId && row.currentHead);
@@ -450,7 +458,7 @@ async function currentRegistration(
 }
 
 async function waitForNoRegistration(clientId: string, subId: number): Promise<void> {
-    const deadline = Date.now() + 3_000;
+    const deadline = Date.now() + SCALE_WAIT_MS;
     while (Date.now() < deadline) {
         const state = await gatewayState(clientId);
         if (!state.registrations.some(row => row.subId === subId && row.currentHead)) return;
@@ -1456,6 +1464,7 @@ describe("public durable live queries in real workerd", () => {
             expect(message.rows).toEqual([]);
             acknowledge((opened[index] as OpenedSocket).socket, message);
         });
+        await Promise.all(clientIds.map(clientId => drainUntilSettled(clientId, [53])));
         const registrationMs = performance.now() - registrationStartedAt;
 
         const writeStartedAt = performance.now();
@@ -1475,7 +1484,12 @@ describe("public durable live queries in real workerd", () => {
                 mutResults: [{ mutId: `global-bench-mut-${index}`, ok: true }],
             });
         });
-        const replacements = opened.map(connection => nextDown(connection.socket));
+        const replacements = opened.map((connection, index) =>
+            nextAfterAcknowledgedSnapshot(
+                connection.socket,
+                initialSnapshots[index] as Extract<Down, { t: "snapshot" }>
+            )
+        );
         await Promise.all(clientIds.map(drainGateway));
         const replacementMessages = await Promise.all(replacements);
         replacementMessages.forEach((message, index) => {
@@ -2205,9 +2219,10 @@ describe("public durable live queries in real workerd", () => {
         const quotaRows = (state: GatewayLiveState) =>
             state.registrations.filter(row => row.currentHead && row.clientId.startsWith(gatewayPrefix));
         const waitForCounts = async (gatewayCount: number, cdbCount: number): Promise<GatewayLiveState> => {
-            const deadline = Date.now() + Math.max(SCALE_WAIT_MS, 15_000);
+            const deadline = Date.now() + QUOTA_SETTLE_MS;
             let lastGatewayCount = -1;
             let lastCdbCount = -1;
+            let lastUnsettled: string[] = [];
             while (Date.now() < deadline) {
                 await drainGateway(gatewayClientId);
                 const state = await gatewayState(gatewayClientId);
@@ -2218,22 +2233,36 @@ describe("public durable live queries in real workerd", () => {
                 );
                 lastGatewayCount = gatewayRows.length;
                 lastCdbCount = activeCdbRows.length;
-                const settled = gatewayRows.every(
-                    row =>
-                        row.lifecycle === "active" &&
-                        row.cdbState === "active" &&
-                        !row.initialSnapshotPending &&
-                        row.dirtyVersion === row.deliveredVersion &&
-                        row.outboxCookie === null &&
-                        row.outboxTargetVersion === null
-                );
-                if (gatewayRows.length === gatewayCount && activeCdbRows.length === cdbCount && settled) {
+                lastUnsettled = gatewayRows
+                    .filter(
+                        row =>
+                            row.lifecycle !== "active" ||
+                            row.cdbState !== "active" ||
+                            row.initialSnapshotPending ||
+                            row.dirtyVersion !== row.deliveredVersion ||
+                            row.outboxCookie !== null ||
+                            row.outboxTargetVersion !== null
+                    )
+                    .map(
+                        row =>
+                            `${row.clientId}:${row.subId}[${row.lifecycle}/${row.cdbState}` +
+                            `${row.initialSnapshotPending ? " initial" : ""}` +
+                            ` v${row.dirtyVersion}/${row.deliveredVersion}` +
+                            `${row.outboxCookie !== null || row.outboxTargetVersion !== null ? " outbox" : ""}]`
+                    );
+                if (
+                    gatewayRows.length === gatewayCount &&
+                    activeCdbRows.length === cdbCount &&
+                    lastUnsettled.length === 0
+                ) {
                     return state;
                 }
                 await Bun.sleep(10);
             }
             throw new Error(
-                `timed out waiting for Gateway/Cdb quota counts ${gatewayCount}/${cdbCount}; last=${lastGatewayCount}/${lastCdbCount}`
+                `timed out after ${QUOTA_SETTLE_MS}ms waiting for Gateway/Cdb quota counts ${gatewayCount}/${cdbCount}; ` +
+                    `last=${lastGatewayCount}/${lastCdbCount}; unsettled=${lastUnsettled.length}` +
+                    `${lastUnsettled.length > 0 ? ` (${lastUnsettled.slice(0, 8).join(", ")})` : ""}`
             );
         };
 
@@ -2266,7 +2295,7 @@ describe("public durable live queries in real workerd", () => {
 
             rejectedSocket = await openSocket(rejectedClientId, await signed("workerd-user"));
             expect(rejectedSocket.welcome).toMatchObject({ t: "welcome" });
-            const rejection = nextDown(rejectedSocket.socket, Math.max(SCALE_WAIT_MS, 5_000));
+            const rejection = nextDown(rejectedSocket.socket, SCALE_WAIT_MS);
             rejectedSocket.socket.send(
                 encodeWire({
                     t: "sub",
@@ -2355,7 +2384,7 @@ describe("public durable live queries in real workerd", () => {
         }
         if (cleanupFailures.length > 0) throw new AggregateError(cleanupFailures, "quota proof cleanup failed");
         expect(quotaRows(await waitForCounts(0, 0))).toHaveLength(0);
-    }, 30_000);
+    }, 180_000);
 
     test(
         "scaled SDK mutation fanout stays tenant-isolated",

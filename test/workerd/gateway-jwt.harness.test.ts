@@ -23,6 +23,9 @@ const JWKS_URL = "https://unreachable.invalid/jwks";
 const WRITE_REF = "test/workerd/gateway-jwt.entry.ts#writeOrganizationRow";
 const CLOSED_REF = "test/workerd/gateway-jwt.entry.ts#closedOrganizationWrite";
 const LIST_REF = "test/workerd/gateway-jwt.entry.ts#listOrganizationRows";
+// Bound on receiving an expected frame, not a latency target. Hosted runners
+// have run ten times slower than a quiet machine.
+const MESSAGE_WAIT_MS = 10_000;
 
 let mf: Miniflare | undefined;
 let workerdUrl: URL | undefined;
@@ -287,7 +290,7 @@ async function openSocket(
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     const socket = new WebSocket(url);
     await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error("timed out opening Gateway WebSocket")), 2_000);
+        const timeout = setTimeout(() => reject(new Error("timed out opening Gateway WebSocket")), MESSAGE_WAIT_MS);
         socket.addEventListener(
             "open",
             () => {
@@ -322,7 +325,7 @@ async function openSocket(
 
 function nextDown(socket: WebSocket): Promise<Down> {
     return new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error("timed out waiting for Gateway message")), 2_000);
+        const timeout = setTimeout(() => reject(new Error("timed out waiting for Gateway message")), MESSAGE_WAIT_MS);
         const onClose = (event: CloseEvent) => {
             clearTimeout(timeout);
             reject(new Error(`Gateway closed before replying (${event.code}: ${event.reason})`));
@@ -442,7 +445,7 @@ function nextDowns(socket: WebSocket, count: number): Promise<Down[]> {
                         `timed out waiting for ${count} Gateway messages after receiving ${JSON.stringify(messages)}`
                     )
                 ),
-            3_000
+            MESSAGE_WAIT_MS
         );
         const onMessage = (event: MessageEvent) => {
             messages.push(decodeWire(String(event.data)) as Down);
@@ -925,7 +928,6 @@ describe("configured Gateway JWT handshake in real workerd", () => {
         }
 
         await setAuthorityFault("hold-throw");
-        const snapshot = nextDown(socket);
         socket.send(
             encodeWire({
                 t: "sub",
@@ -943,6 +945,15 @@ describe("configured Gateway JWT handshake in real workerd", () => {
                 args: { organizationId: "workerd-org", body: "duplicate-second" },
             })
         );
+        // Catalog release is a separate event source. A later frame proves the
+        // Gateway has cancelled the first subscription before that release.
+        const replacementBarrier = nextDown(socket);
+        socket.send("{");
+        await expect(replacementBarrier).resolves.toMatchObject({
+            t: "error",
+            code: "CDB_UNSUPPORTED_FEATURE",
+        });
+        const snapshot = nextDown(socket);
         await authorityControl("/authority-release");
 
         await expect(snapshot).resolves.toMatchObject({

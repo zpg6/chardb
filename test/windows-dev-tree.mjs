@@ -10,6 +10,15 @@ const CHILD_PROCESS_TIMEOUT_MS = 5 * 60_000;
 const FILESYSTEM_CLEANUP_TIMEOUT_MS = 30_000;
 const HTTP_REQUEST_TIMEOUT_MS = 10_000;
 const PROCESS_OUTPUT_TIMEOUT_MS = 5_000;
+// A generated dev process that hits an occupied port still has to start Node,
+// load Wrangler, and fail to bind before it can exit. Cold hosted Windows
+// runners have needed well over ten seconds for that path.
+const STARTUP_FAILURE_TIMEOUT_MS = 60_000;
+// Descendant cleanup is verified through Win32_Process snapshots that take
+// about a second each on hosted runners, and the generated watchdog needs
+// several of its own snapshots to finish killing orphans. Five seconds was
+// only enough on a quiet runner.
+const PROCESS_EXIT_TIMEOUT_MS = 30_000;
 // Win32_Process enumeration can briefly stall on hosted Windows runners while
 // toolchains are starting or exiting. It remains bounded, but needs enough
 // headroom to avoid treating that transient WMI contention as a dev-server failure.
@@ -101,7 +110,6 @@ try {
             workerPort: blockedAddress.port,
             webPort: failedWebPort,
             service: "Worker",
-            timeoutMs: 10_000,
         })
     );
 
@@ -116,7 +124,6 @@ try {
             workerPort: failedWorkerPort,
             webPort: blockedWebAddress.port,
             service: "Web",
-            timeoutMs: 30_000,
         })
     );
 
@@ -165,13 +172,16 @@ try {
                     `iteration ${iteration + 1} could not force-stop the dev parent: ${stopped.stderr.trim()}`
                 );
             }
-            const exited = await Promise.race([child.exited.then(() => true), Bun.sleep(5_000).then(() => false)]);
+            const exited = await Promise.race([
+                child.exited.then(() => true),
+                Bun.sleep(PROCESS_EXIT_TIMEOUT_MS).then(() => false),
+            ]);
             if (!exited) throw new Error(`iteration ${iteration + 1} dev parent survived forced termination`);
             await runPhase(`restart cycle ${cycle}: verify descendant cleanup`, () =>
-                waitForProcessesToExit(descendants, 5_000)
+                waitForProcessesToExit(descendants, PROCESS_EXIT_TIMEOUT_MS)
             );
             await runPhase(`restart cycle ${cycle}: verify project cleanup`, () =>
-                waitForNoProjectProcesses(project, 5_000)
+                waitForNoProjectProcesses(project, PROCESS_EXIT_TIMEOUT_MS)
             );
             await runPhase(`restart cycle ${cycle}: verify port reuse`, () =>
                 Promise.all([assertPortReusable(workerPort), assertPortReusable(webPort)])
@@ -201,14 +211,14 @@ try {
         });
     }
 
-    async function proveOccupiedPortFailure({ blockedServer, blockedPort, workerPort, webPort, service, timeoutMs }) {
+    async function proveOccupiedPortFailure({ blockedServer, blockedPort, workerPort, webPort, service }) {
         const failedStartup = spawnGeneratedDev(workerPort, webPort, "pipe");
         const failedStdout = drainStream(failedStartup.stdout);
         const failedStderr = drainStream(failedStartup.stderr);
         try {
             const exited = await Promise.race([
                 failedStartup.exited.then(() => true),
-                Bun.sleep(timeoutMs).then(() => false),
+                Bun.sleep(STARTUP_FAILURE_TIMEOUT_MS).then(() => false),
             ]);
             if (!exited) throw new Error(`generated dev did not exit after ${service} startup failure`);
             if (failedStartup.exitCode === 0) throw new Error(`generated dev accepted an occupied ${service} port`);
@@ -233,7 +243,7 @@ try {
             }
             await Promise.all([failedStdout.cancel(), failedStderr.cancel()]);
         }
-        await waitForNoProjectProcesses(project, 5_000);
+        await waitForNoProjectProcesses(project, PROCESS_EXIT_TIMEOUT_MS);
         await assertPortReusable(workerPort);
         await assertPortReusable(webPort);
     }
@@ -392,7 +402,11 @@ async function waitForProcessesToExit(processes, timeoutMs) {
         if (remaining.length > 0) await Bun.sleep(50);
     }
     if (remaining.length > 0) {
-        throw new Error(`dev descendants survived shutdown: ${remaining.map(process => process.pid).join(", ")}`);
+        throw new Error(
+            `dev descendants survived shutdown after ${timeoutMs}ms: ${remaining
+                .map(process => `${process.pid} ${process.commandLine.slice(0, 120)}`)
+                .join("; ")}`
+        );
     }
 }
 

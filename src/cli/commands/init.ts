@@ -995,9 +995,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const WINDOWS_WATCHDOG_ARGUMENT = "--chardb-windows-watchdog";
-const WINDOWS_UTILITY_TIMEOUT_MS = 5_000;
+// Win32_Process enumeration can stall for many seconds on a loaded Windows
+// host. The watchdog must outlive such a stall, or orphaned dev processes
+// survive a force-stopped parent.
+const WINDOWS_UTILITY_TIMEOUT_MS = 30_000;
 const WINDOWS_STDIN_CANCEL_TIMEOUT_MS = 1_000;
-const READINESS_PROBE_TIMEOUT_MS = 1_000;
+// One readiness probe. Wrangler's first /health on a cold, loaded machine has
+// taken over three seconds; a probe that aborts is retried until the deadline.
+const READINESS_PROBE_TIMEOUT_MS = 5_000;
 
 async function runWindowsUtility(command) {
   const child = Bun.spawn(command, { stdin: "ignore", stdout: "pipe", stderr: "pipe", windowsHide: true });
@@ -1076,6 +1081,17 @@ async function forceWindowsProcessTree(pid) {
   }
 }
 
+// A watchdog snapshot that fails or stalls must not end the watchdog: the
+// parent may still die later and its descendants still need cleanup.
+async function windowsProcessSnapshotOrNull() {
+  try {
+    return await windowsProcessSnapshot();
+  } catch (error) {
+    console.error("chardb dev watchdog: process snapshot failed; retrying: " + (error?.message ?? String(error)));
+    return null;
+  }
+}
+
 async function runWindowsWatchdog(rootPid) {
   const tracked = new Map();
   const initialSnapshot = await windowsProcessSnapshot();
@@ -1095,7 +1111,11 @@ async function runWindowsWatchdog(rootPid) {
   })().catch(() => undefined);
   try {
     while (!inputClosed) {
-      const snapshot = await windowsProcessSnapshot();
+      const snapshot = await windowsProcessSnapshotOrNull();
+      if (!snapshot) {
+        await Bun.sleep(250);
+        continue;
+      }
       const currentRoot = snapshot.find(row => row.pid === rootPid);
       if (!currentRoot) {
         for (const child of descendantsOfProcessIdentity(snapshot, rootPid, rootCreatedAt)) {
@@ -1116,8 +1136,14 @@ async function runWindowsWatchdog(rootPid) {
     ]);
     void observeInput;
   }
-  for (let pass = 0; pass < 3; pass++) {
-    const snapshot = await windowsProcessSnapshot();
+  for (let pass = 0, misses = 0; pass < 3; ) {
+    const snapshot = await windowsProcessSnapshotOrNull();
+    if (!snapshot) {
+      if (++misses >= 10) break;
+      await Bun.sleep(250);
+      continue;
+    }
+    pass += 1;
     for (const child of descendantsOfProcessIdentity(snapshot, rootPid, rootCreatedAt)) {
       if (child.pid !== process.pid) tracked.set(child.pid, child.createdAt);
     }

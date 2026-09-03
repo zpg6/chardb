@@ -35,12 +35,34 @@ export function isTransientWorkerdStartupFailure(error) {
     );
 }
 
+// The outer timeout is a hang guard for one harness process. Individual cases
+// get caseTimeoutMs below; the file budget must leave room for several slow
+// cases because hosted runners have run ten times slower than a quiet machine.
 function outerTimeoutMs() {
-    const raw = process.env.CHARDB_WORKERD_TEST_TIMEOUT_MS ?? "120000";
+    const raw = process.env.CHARDB_WORKERD_TEST_TIMEOUT_MS ?? "600000";
     const value = Number(raw);
     if (!Number.isSafeInteger(value) || value <= 0) {
         throw new Error(
             `CHARDB_WORKERD_TEST_TIMEOUT_MS must be a positive safe integer, received ${JSON.stringify(raw)}`
+        );
+    }
+    return value;
+}
+
+// Per-test timeout handed to `bun test --timeout` for workerd harnesses and the
+// isolated native test. Bun's 5 s default fits unit tests, not cases that drive
+// real workerd instances through hundreds of registrations.
+export function caseTimeoutMs(outerMs = outerTimeoutMs()) {
+    const raw = process.env.CHARDB_WORKERD_CASE_TIMEOUT_MS ?? "60000";
+    const value = Number(raw);
+    if (!Number.isSafeInteger(value) || value <= 0) {
+        throw new Error(
+            `CHARDB_WORKERD_CASE_TIMEOUT_MS must be a positive safe integer, received ${JSON.stringify(raw)}`
+        );
+    }
+    if (value >= outerMs) {
+        throw new Error(
+            `CHARDB_WORKERD_CASE_TIMEOUT_MS (${value}) must be below CHARDB_WORKERD_TEST_TIMEOUT_MS (${outerMs})`
         );
     }
     return value;
@@ -177,15 +199,16 @@ export async function main(argv = process.argv.slice(2)) {
 
     if (!watch) {
         const timeoutMs = outerTimeoutMs();
+        const caseTimeout = ["--timeout", String(caseTimeoutMs(timeoutMs))];
         const attempts = workerdAttempts();
         for (const test of isolatedNativeTests) {
             const file = relative(test);
-            await run(file, ["bun", "test", file], timeoutMs);
+            await run(file, ["bun", "test", ...caseTimeout, file], timeoutMs);
             await Bun.sleep(WORKERD_PROCESS_SETTLE_MS);
         }
         for (const [index, harness] of workerdTests.entries()) {
             const file = relative(harness);
-            await runWithRetries(file, ["bun", "test", file], timeoutMs, {
+            await runWithRetries(file, ["bun", "test", ...caseTimeout, file], timeoutMs, {
                 attempts,
                 retryDelayMs: WORKERD_PROCESS_SETTLE_MS,
                 captureOutput: true,
