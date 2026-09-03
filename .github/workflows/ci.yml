@@ -127,6 +127,18 @@ jobs:
         with:
           bun-version: 1.2.22
 
+      - name: Set up Node for npm consumer smoke tests
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22.23.1
+
+      - name: Pin npm for consumer smoke tests
+        shell: bash
+        run: |
+          npm install --global npm@11.6.0
+          node --version
+          npm --version
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
