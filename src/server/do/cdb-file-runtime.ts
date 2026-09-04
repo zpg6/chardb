@@ -89,10 +89,6 @@ export class CdbFileRuntime {
                 this.storage.transactionSync(() => callback(new CdbFileStore(adaptSqlStorage(this.storage.sql)))));
     }
 
-    enabled(): boolean {
-        return this.resources().length > 0;
-    }
-
     reserve(request: CdbFileReserveRequest): StoredFile {
         this.assertRequestAuthority(request.organizationId, request.auth);
         this.assertActiveEpoch(request.domainSchemaEpoch);

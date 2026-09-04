@@ -77,6 +77,41 @@ async function expectProcessGone(pid: number): Promise<void> {
 const posixTest = process.platform === "win32" ? test.skip : test;
 
 describe("correctness runner process control", () => {
+    posixTest(
+        "keeps replacement control pipes open after garbage collection",
+        async () => {
+            const childSource = `
+            process.stdin.resume();
+            process.stdin.on("end", () => require("node:fs").writeSync(3, "ready"));
+        `;
+            const source = `
+            import { spawn } from "node:child_process";
+            import { once } from "node:events";
+            for (let index = 0; index < 32; index++) {
+                const child = spawn(process.execPath, ["-e", ${JSON.stringify(childSource)}], {
+                    stdio: ["pipe", "ignore", "inherit", "pipe"],
+                });
+                const exited = once(child, "exit");
+                const output = new Response(child.stdio[3]).text();
+                // Old Bun finalizers double-close a previous child's reused fd.
+                Bun.gc(true);
+                child.stdin.end();
+                const [code] = await exited;
+                if (code !== 0 || await output !== "ready") {
+                    throw new Error("Control pipe failed at launch " + index + " on Bun " + Bun.version);
+                }
+            }
+        `;
+            await expect(
+                run("Workerd control pipe ownership", [process.execPath, "-e", source], 10_000, {
+                    stdin: "ignore",
+                    captureOutput: true,
+                })
+            ).resolves.toBeUndefined();
+        },
+        15_000
+    );
+
     test("isolates the real Wrangler reshard producer from Bun's parallel unit-test pool", () => {
         expect(isIsolatedNativeTest("test/native_reshard_benchmark_producer.test.ts")).toBe(true);
         expect(isIsolatedNativeTest("test/native_reshard_benchmark_report.test.ts")).toBe(false);

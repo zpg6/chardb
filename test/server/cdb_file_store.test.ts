@@ -87,12 +87,14 @@ describe("Cdb file lifecycle store", () => {
         expect(store.queueDelete("file_a", 70).updatedAt).toBe(100);
 
         reserve("file_pending", 1, 200);
-        expect(store.expirePending(200, 150)).toBe(1);
+        expect(store.maintenanceCandidates(200).map(file => String(file.fileId))).toEqual(["file_pending"]);
+        store.queueDelete("file_pending", 150);
         expect(store.read("file_pending")).toMatchObject({ status: "deleting", updatedAt: 200 });
 
         reserve("file_ready", 1, 300);
         store.markReady("file_ready", HASH_A, 1, 310);
-        expect(store.expireUnattached(310, 250)).toBe(1);
+        expect(store.maintenanceCandidates(310).map(file => String(file.fileId))).toEqual(["file_ready"]);
+        store.queueDelete("file_ready", 250);
         expect(store.read("file_ready")).toMatchObject({ status: "deleting", updatedAt: 310 });
     });
 
@@ -121,33 +123,6 @@ describe("Cdb file lifecycle store", () => {
         ]);
     });
 
-    test("replaces atomically and exposes a bounded idempotent delete queue", () => {
-        reserve("file_old", 4, 100);
-        store.markReady("file_old", HASH_A, 4, 101);
-        store.attach("file_old", "org-1", "messages", "attachment", "row-1", 102);
-        reserve("file_new", 5, 103);
-        store.markReady("file_new", HASH_B, 5, 104);
-
-        const replacement = db.transaction(() =>
-            store.replaceInTransaction({
-                nextFileId: "file_new",
-                previousFileId: "file_old",
-                organizationId: "org-1",
-                table: "messages",
-                column: "attachment",
-                rowId: "row-1",
-                nowMs: 105,
-            })
-        )();
-        expect(replacement.attached.status).toBe("attached");
-        expect(replacement.queued?.status).toBe("deleting");
-        expect(store.dueDeletes()).toEqual([expect.objectContaining({ fileId: "file_old", status: "deleting" })]);
-        expect(store.queueDelete("file_old", 106).status).toBe("deleting");
-        store.completeDelete("file_old");
-        expect(store.read("file_old")).toBeNull();
-        expect(() => store.completeDelete("file_new")).toThrow(/only a deleting file/);
-    });
-
     test("keeps quota charged through deletion and releases it only after R2 completion", () => {
         reserve("file_a", 6);
         reserve("file_b", 4);
@@ -162,7 +137,8 @@ describe("Cdb file lifecycle store", () => {
         reserve("file_a", 1, 100);
         reserve("file_b", 1, 200);
         expect(() => reserve("file_c", 1, 300)).toThrow(expect.objectContaining({ code: "CDB_RATE_LIMITED" }));
-        expect(store.expirePending(150, 400)).toBe(1);
+        expect(store.maintenanceCandidates(150).map(file => String(file.fileId))).toEqual(["file_a"]);
+        store.queueDelete("file_a", 400);
         expect(store.dueDeletes()).toEqual([expect.objectContaining({ fileId: "file_a", status: "deleting" })]);
         expect(reserve("file_c", 1, 500).status).toBe("pending");
     });
@@ -182,8 +158,9 @@ describe("Cdb file lifecycle store", () => {
             expect.objectContaining({ code: "CDB_FORBIDDEN" })
         );
 
-        expect(store.expireUnattached(149, 300)).toBe(0);
-        expect(store.expireUnattached(150, 301)).toBe(1);
+        expect(store.maintenanceCandidates(149)).toEqual([]);
+        expect(store.maintenanceCandidates(150).map(file => String(file.fileId))).toEqual(["file_pending"]);
+        store.queueDelete("file_pending", 301);
         expect(store.read("file_pending")?.status).toBe("deleting");
     });
 
@@ -208,33 +185,11 @@ describe("Cdb file lifecycle store", () => {
         expect(store.dueDeletes()).toHaveLength(32);
         expect(store.hasTombstonedMaterializedFiles()).toBe(true);
         expect(store.read("other_file")?.status).toBe("ready");
-        expect(store.queueTombstonedFiles(301)).toBe(8);
+        const candidates = store.maintenanceCandidates(0);
+        expect(candidates).toHaveLength(8);
+        for (const file of candidates) store.queueDelete(file.fileId, 301);
         expect(store.hasTombstonedMaterializedFiles()).toBe(false);
         expect(store.read("other_file")?.status).toBe("ready");
-    });
-
-    test("rolls back a mismatched replacement without attaching the new file", () => {
-        reserve("file_old", 4);
-        store.markReady("file_old", HASH_A, 4, 101);
-        store.attach("file_old", "org-1", "messages", "attachment", "row-other", 102);
-        reserve("file_new", 4, 103);
-        store.markReady("file_new", HASH_B, 4, 104);
-
-        expect(() =>
-            db.transaction(() =>
-                store.replaceInTransaction({
-                    nextFileId: "file_new",
-                    previousFileId: "file_old",
-                    organizationId: "org-1",
-                    table: "messages",
-                    column: "attachment",
-                    rowId: "row-1",
-                    nowMs: 105,
-                })
-            )()
-        ).toThrow(/replacement source/);
-        expect(store.read("file_new")?.status).toBe("ready");
-        expect(store.read("file_old")?.status).toBe("attached");
     });
 
     test("generated triggers attach, replace, and delete in the owning row transaction", () => {
@@ -280,6 +235,15 @@ describe("Cdb file lifecycle store", () => {
             ])
         ).toThrow(/CDB_FILE_INVALID_ATTACHMENT/);
 
+        expect(() => db.run("UPDATE messages SET attachment = 'file_pending' WHERE id = 'row-1'")).toThrow(
+            /CDB_FILE_INVALID_ATTACHMENT/
+        );
+        expect(db.query("SELECT attachment FROM messages WHERE id = 'row-1'").get()).toEqual({
+            attachment: "file_old",
+        });
+        expect(store.read("file_old")?.status).toBe("attached");
+        expect(store.read("file_pending")?.status).toBe("pending");
+
         reserve("file_new", 5, 103);
         store.markReady("file_new", HASH_B, 5, 104);
         const beforeReplace = db.query("SELECT total_changes() AS count").get() as { count: number };
@@ -294,6 +258,74 @@ describe("Cdb file lifecycle store", () => {
         const afterDelete = db.query("SELECT total_changes() AS count").get() as { count: number };
         expect(afterDelete.count - beforeDelete.count).toBe(2);
         expect(store.read("file_new")?.status).toBe("deleting");
+    });
+
+    test.each([
+        ["id", "row-moved"],
+        ["organization_id", "org-2"],
+    ])("rejects changing %s while a file is attached", (column, value) => {
+        db.run("CREATE TABLE messages (id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, attachment TEXT)");
+        for (const statement of renderFileAttachmentTriggers({
+            kind: "file",
+            version: 1,
+            table: "messages",
+            column: "attachment",
+            primaryKey: "id",
+            organizationColumn: "organization_id",
+            maxSize: 10,
+            contentTypes: "*",
+        }))
+            db.run(statement);
+        reserve("file_a");
+        store.markReady("file_a", HASH_A, 4, 101);
+        db.run("INSERT INTO messages VALUES ('row-1', 'org-1', 'file_a')");
+
+        for (const assignment of ["", ", attachment = NULL"]) {
+            expect(() => db.run(`UPDATE messages SET ${column} = ?${assignment}`, [value])).toThrow(
+                /CDB_FILE_INVALID_ATTACHMENT/
+            );
+            expect(db.query("SELECT * FROM messages").get()).toEqual({
+                id: "row-1",
+                organization_id: "org-1",
+                attachment: "file_a",
+            });
+            expect(store.read("file_a")).toMatchObject({ status: "attached", rowId: "row-1" });
+        }
+        db.run("UPDATE messages SET id = id, organization_id = organization_id");
+        db.run("UPDATE messages SET attachment = NULL");
+        db.run(`UPDATE messages SET ${column} = ?`, [value]);
+        expect(store.read("file_a")?.status).toBe("deleting");
+    });
+
+    test.each([
+        ["empty", ""],
+        ["ASCII overflow", "x".repeat(257)],
+        ["UTF-8 overflow", "é".repeat(129)],
+    ])("rejects an attachment whose row ID cannot be downloaded: %s", (_label, rowId) => {
+        db.run("CREATE TABLE messages (id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, attachment TEXT)");
+        for (const statement of renderFileAttachmentTriggers({
+            kind: "file",
+            version: 1,
+            table: "messages",
+            column: "attachment",
+            primaryKey: "id",
+            organizationColumn: "organization_id",
+            maxSize: 10,
+            contentTypes: "*",
+        }))
+            db.run(statement);
+        reserve("file_a");
+        store.markReady("file_a", HASH_A, 4, 101);
+        expect(() => db.run("INSERT INTO messages VALUES (?, 'org-1', 'file_a')", [rowId])).toThrow(
+            /CDB_FILE_INVALID_ATTACHMENT/
+        );
+        expect(db.query("SELECT * FROM messages").all()).toEqual([]);
+        db.run("INSERT INTO messages VALUES (?, 'org-1', NULL)", [rowId]);
+        expect(() => db.run("UPDATE messages SET attachment = 'file_a'")).toThrow(/CDB_FILE_INVALID_ATTACHMENT/);
+        expect(store.read("file_a")?.status).toBe("ready");
+        db.run("DELETE FROM messages");
+        db.run("INSERT INTO messages VALUES (?, 'org-1', 'file_a')", ["é".repeat(128)]);
+        expect(store.read("file_a")).toMatchObject({ status: "attached", rowId: "é".repeat(128) });
     });
 
     test("generated triggers reject a synthetic ready file after the organization fence", () => {
