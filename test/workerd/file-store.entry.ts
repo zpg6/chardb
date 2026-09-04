@@ -113,7 +113,7 @@ export class FileStoreProof extends DurableObject<FileStoreEnv> {
                 size: 2,
                 nowMs: 106,
             });
-            store.expirePending(106, 107);
+            store.queueDelete("file_abandoned", 107);
         });
         const seededStore = new CdbFileStore(adaptSqlStorage(this.ctx.storage.sql));
         for (const fileId of ["file_old", "file_new"] as const) {
