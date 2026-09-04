@@ -147,3 +147,14 @@ button:disabled {
         grid-template-columns: 1fr;
     }
 }
+
+.message-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.message-actions button {
+    padding: 4px 8px;
+    font-size: 12px;
+}

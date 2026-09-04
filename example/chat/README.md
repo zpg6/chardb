@@ -1,13 +1,13 @@
 # chardb chat tutorial
 
-This is the small path through CharDB. It has one organization-owned table, one mutation, one live query, and one React screen. Better Auth signs in an anonymous local user. The configured CharDB client reads that session and adds the active organization to database calls.
+One organization-owned table covers typed create, edit, and delete mutations, live queries, and row permissions on one React screen. Better Auth signs in an anonymous local user. The configured CharDB client reads that session and adds the active organization to database calls.
 
 The files follow the same split an application should use:
 
 ```text
 src/server/auth.ts       Better Auth organization, anonymous, and JWT plugins
 src/server/schema.ts     one forOrg(auth) table
-src/server/api.ts        postMessage mutation
+src/server/api.ts        postMessage, editMessage, deleteMessage
 src/server/queries.ts    listMessages live query
 src/server/migrations/v1.ts  immutable deployed version-one schema snapshot
 src/server/migrations.ts     append-only migration journal
@@ -45,13 +45,15 @@ function Messages() {
 Run it locally:
 
 ```bash
-bun run build
+bun run build:react
 cd example/chat
 npm ci
 npm run typecheck
 npm run build
 npm run dev
 ```
+
+Set `CHARDB_DEV_PERSIST_TO=/tmp/chardb-chat-fresh` to try a fresh local database without deleting existing state.
 
 `dev` starts Wrangler, reads the packaged schema version from `/health`, then applies that exact migration target. It prints the local URL only after the schema is active. Appending version two to `src/server/migrations.ts` makes the next `npm run dev` apply version two without another flag. The Wrangler config declares four same-Worker Durable Object namespaces for CharDB's internal calls. Application code uses only the exported `DB` binding.
 
