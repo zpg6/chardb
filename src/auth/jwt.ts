@@ -1,30 +1,5 @@
-/**
- * JWT decoding and verification for chardb's `Gateway.hello` boundary.
- *
- * The Gateway needs a stable `principalId` derived from the inbound JWT so
- * subscription routing and op-log dedup can key on the authenticated user.
- * `decodeJwtClaims` is intentionally available for diagnostics only.
- * Authorization paths use `verifyJwt`, which verifies the signature and
- * registered claims against a pinned deployment configuration.
- *
- * What this module *does* guarantee:
- *
- *   - `decodeJwtClaims` rejects malformed tokens (no two dots, non-object
- *     payload, unparseable base64url).
- *   - `decodeJwtClaims` rejects tokens whose `exp` is at or before `now`.
- *   - Returns a typed claims object — never `unknown`/`any`.
- *
- * Callers MUST never treat `decodeJwtClaims` or `principalIdFromJwt` as an
- * authorization decision. The Gateway stores a principal only after
- * `verifyJwt` succeeds.
- *
- * RFC 7519 §4.1 defines the registered claims used here:
- * https://datatracker.ietf.org/doc/html/rfc7519#section-4.1
- */
-
-import { type JWK, importJWK, errors as joseErrors, jwtVerify } from "jose";
+import { type JWK, decodeJwt, decodeProtectedHeader, importJWK, errors as joseErrors, jwtVerify } from "jose";
 import { CdbError } from "../errors.ts";
-import { PrincipalId } from "../types.ts";
 
 export interface JwtClaims {
     /** Subject — the principal the token represents. */
@@ -41,72 +16,6 @@ export interface JwtClaims {
     readonly jti?: string;
     /** Custom claims kept opaque — typed `unknown` so callers must narrow. */
     readonly [k: string]: unknown;
-}
-
-export interface DecodedJwt {
-    readonly kid: string;
-    readonly alg: string;
-    readonly claims: JwtClaims;
-}
-
-/**
- * Pure base64url decoder — accepts the URL-safe alphabet (no `+`/`/`) and
- * tolerates missing trailing padding per RFC 4648 §5.
- */
-export function base64UrlDecode(input: string): string {
-    const padded = input.replace(/-/g, "+").replace(/_/g, "/");
-    const fillerNeeded = (4 - (padded.length % 4)) % 4;
-    return atob(padded + "=".repeat(fillerNeeded));
-}
-
-/**
- * Decode an unverified JWT. Returns the parsed header + claims, or `null`
- * if the token is malformed or expired. Does NOT verify the signature.
- *
- * `nowSeconds` is injectable for deterministic tests; the production path
- * passes `Math.floor(Date.now() / 1000)`.
- */
-export function decodeJwtClaims(
-    jwt: string | undefined,
-    nowSeconds: number = Math.floor(Date.now() / 1000)
-): DecodedJwt | null {
-    if (!jwt) return null;
-    const firstDot = jwt.indexOf(".");
-    const lastDot = jwt.lastIndexOf(".");
-    if (firstDot < 0 || firstDot === lastDot) return null;
-    const headerRaw = jwt.slice(0, firstDot);
-    const payloadRaw = jwt.slice(firstDot + 1, lastDot);
-    let header: { kid?: unknown; alg?: unknown } | null;
-    let claims: { [k: string]: unknown } | null;
-    try {
-        header = JSON.parse(base64UrlDecode(headerRaw)) as { kid?: unknown; alg?: unknown };
-        claims = JSON.parse(base64UrlDecode(payloadRaw)) as { [k: string]: unknown };
-    } catch {
-        return null;
-    }
-    if (header === null || typeof header !== "object") return null;
-    if (claims === null || typeof claims !== "object") return null;
-    const exp = typeof claims.exp === "number" ? claims.exp : undefined;
-    if (exp !== undefined && exp <= nowSeconds) return null;
-    return {
-        kid: typeof header.kid === "string" ? header.kid : "",
-        alg: typeof header.alg === "string" ? header.alg : "",
-        claims: claims as JwtClaims,
-    };
-}
-
-/**
- * Project the `sub` claim into a `PrincipalId`. Returns `null` when the
- * token is missing/expired/malformed or when `sub` is absent — callers
- * should fall back to a clientId projection so subscription routing
- * still works for unauthenticated traffic.
- */
-export function principalIdFromJwt(jwt: string | undefined, nowSeconds?: number): PrincipalId | null {
-    const decoded = decodeJwtClaims(jwt, nowSeconds);
-    if (!decoded) return null;
-    const sub = decoded.claims.sub;
-    if (typeof sub !== "string" || sub.length === 0) return null;
-    return PrincipalId(sub);
 }
 
 /**
@@ -143,22 +52,41 @@ export interface VerifyJwtOptions {
  * JWKS refresh + retry.
  */
 export async function verifyJwt(jwt: string, opts: VerifyJwtOptions): Promise<JwtClaims> {
-    const decoded = decodeJwtClaims(jwt);
-    if (!decoded) {
-        throw new CdbError({ code: "CDB_FORBIDDEN", message: "verifyJwt: malformed or expired JWT" });
+    let header: ReturnType<typeof decodeProtectedHeader>;
+    let claims: ReturnType<typeof decodeJwt>;
+    try {
+        header = decodeProtectedHeader(jwt);
+        claims = decodeJwt(jwt);
+    } catch (cause) {
+        throw new CdbError({ code: "CDB_FORBIDDEN", message: "verifyJwt: malformed JWT", cause });
     }
-    const jwk = await opts.resolver(decoded.kid);
-    if (!jwk) {
-        throw new CdbError({
-            code: "CDB_FORBIDDEN",
-            message: `verifyJwt: no JWK for kid ${decoded.kid || "(unset)"}`,
-        });
-    }
-    if (opts.algorithms.length === 0 || !opts.algorithms.includes(decoded.alg)) {
+    if (typeof header.alg !== "string" || !opts.algorithms.includes(header.alg)) {
         throw new CdbError({ code: "CDB_FORBIDDEN", message: "verifyJwt: disallowed JWT algorithm" });
     }
+    if (
+        typeof claims.sub !== "string" ||
+        claims.sub.length === 0 ||
+        typeof claims.exp !== "number" ||
+        !Number.isFinite(claims.exp) ||
+        claims.exp <= Math.floor(Date.now() / 1000) ||
+        (claims.nbf !== undefined && !Number.isFinite(claims.nbf)) ||
+        (claims.iat !== undefined && !Number.isFinite(claims.iat))
+    ) {
+        throw new CdbError({ code: "CDB_FORBIDDEN", message: "verifyJwt: invalid or expired JWT claims" });
+    }
+    const jwk = await opts.resolver(typeof header.kid === "string" ? header.kid : "");
+    if (!jwk) {
+        throw new CdbError({ code: "CDB_FORBIDDEN", message: "verifyJwt: no matching JWK" });
+    }
+    if (
+        (jwk.alg !== undefined && jwk.alg !== header.alg) ||
+        (jwk.use !== undefined && jwk.use !== "sig") ||
+        (jwk.key_ops !== undefined && !jwk.key_ops.includes("verify"))
+    ) {
+        throw new CdbError({ code: "CDB_FORBIDDEN", message: "verifyJwt: JWK does not allow this signature" });
+    }
     try {
-        const key = await importJWK(jwk, decoded.alg);
+        const key = await importJWK(jwk, header.alg);
         const audience: string | string[] | undefined =
             typeof opts.audience === "string"
                 ? opts.audience
