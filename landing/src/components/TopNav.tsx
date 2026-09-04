@@ -31,6 +31,16 @@ export function TopNav({ homeHref = "#top", storyActive = false }: TopNavProps) 
                                 docs soon
                             </span>
                         </li>
+                        <li>
+                            <a
+                                href="https://github.com/zpg6/chardb"
+                                className="nav-link hover:text-fg transition-colors"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                            >
+                                github
+                            </a>
+                        </li>
                     </ul>
                 </nav>
             </div>
