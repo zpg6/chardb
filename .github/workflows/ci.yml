@@ -9,12 +9,18 @@ on:
       - '**.mdx'
       - LICENSE
       - .github/CODEOWNERS
+      - landing/**
+      - .github/workflows/landing.yml
+      - .github/workflows/rust-client.yml
   pull_request:
     paths-ignore:
       - '**.md'
       - '**.mdx'
       - LICENSE
       - .github/CODEOWNERS
+      - landing/**
+      - .github/workflows/landing.yml
+      - .github/workflows/rust-client.yml
 
 permissions:
   contents: read
@@ -141,9 +147,6 @@ jobs:
 
       - name: Test correctness suite
         run: bun run test:correctness
-
-      - name: Build landing page
-        run: bun run --cwd landing build
 
       - name: Smoke-test exact candidate
         shell: bash
