@@ -55,9 +55,10 @@ jobs:
       - name: Upload exact candidate
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: candidate-${{ github.sha }}-${{ github.run_attempt }}
+          name: candidate-${{ github.sha }}
           path: ci-candidate
           if-no-files-found: error
+          overwrite: true
 
   generated-windows-dev-tree:
     name: Generated Windows dev tree
@@ -79,7 +80,7 @@ jobs:
       - name: Download exact candidate
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
-          name: candidate-${{ github.sha }}-${{ github.run_attempt }}
+          name: candidate-${{ github.sha }}
           path: ci-candidate
 
       - name: Verify exact candidate handoff
@@ -123,7 +124,7 @@ jobs:
       - name: Download exact candidate
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
-          name: candidate-${{ github.sha }}-${{ github.run_attempt }}
+          name: candidate-${{ github.sha }}
           path: ci-candidate
 
       - name: Verify exact candidate handoff
