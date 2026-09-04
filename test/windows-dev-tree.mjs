@@ -1,9 +1,8 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { descendantProcesses } from "./helpers/process-tree.ts";
-import { isOccupiedPortFailure } from "./helpers/windows-port-collision.ts";
+import { createPortBlocker, isOccupiedPortFailure } from "./helpers/windows-port-collision.ts";
 
 if (process.platform !== "win32") throw new Error("windows-dev-tree.mjs must run on Windows");
 
@@ -12,6 +11,7 @@ const FILESYSTEM_CLEANUP_TIMEOUT_MS = 30_000;
 const HTTP_REQUEST_TIMEOUT_MS = 10_000;
 const PROCESS_OUTPUT_TIMEOUT_MS = 5_000;
 const PROCESS_TREE_EXIT_TIMEOUT_MS = 30_000;
+const PORT_CLOSE_TIMEOUT_MS = 5_000;
 const STARTUP_FAILURE_TIMEOUT_MS = 60_000;
 // Win32_Process enumeration can briefly stall on hosted Windows runners while
 // toolchains are starting or exiting. It remains bounded, but needs enough
@@ -225,7 +225,6 @@ try {
                 );
             }
         } finally {
-            await closeServer(blockedServer);
             if (failedStartup.exitCode === null) {
                 await runUtility(["taskkill.exe", "/PID", String(failedStartup.pid), "/T", "/F"]).catch(
                     () => undefined
@@ -233,6 +232,7 @@ try {
                 await Promise.race([failedStartup.exited, Bun.sleep(2_000)]);
             }
             await Promise.all([failedStdout.cancel(), failedStderr.cancel()]);
+            await closeServer(blockedServer);
         }
         await waitForNoProjectProcesses(project, PROCESS_TREE_EXIT_TIMEOUT_MS);
         await assertPortReusable(workerPort);
@@ -548,7 +548,7 @@ async function assertPortReusable(port) {
 }
 
 async function listen(port) {
-    const server = createServer();
+    const server = createPortBlocker();
     await new Promise((resolve, reject) => {
         server.once("error", reject);
         server.listen(port, "127.0.0.1", resolve);
@@ -557,5 +557,9 @@ async function listen(port) {
 }
 
 async function closeServer(server) {
-    await new Promise((resolve, reject) => server.close(error => (error ? reject(error) : resolve())));
+    await withTimeout(
+        new Promise((resolve, reject) => server.close(error => (error ? reject(error) : resolve()))),
+        PORT_CLOSE_TIMEOUT_MS,
+        "port listener cleanup"
+    );
 }
