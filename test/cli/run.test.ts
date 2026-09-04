@@ -31,7 +31,7 @@ describe("chardb command availability", () => {
 
         expect(await runCli(ctx, ["--help"])).toBe(0);
         expect(err).toEqual([]);
-        for (const command of ["init", "doctor", "migrate", "migrations", "vectorize", "backups"]) {
+        for (const command of ["init", "doctor", "migrate", "migrations", "vectorize", "api", "backups"]) {
             expect(out.join("")).toContain(`chardb ${command}`);
         }
         expect(out.join("")).not.toContain("shards");

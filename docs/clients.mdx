@@ -36,6 +36,8 @@ The `chardb-client` crate lives in `rust/chardb` and provides blocking and runti
 
 Typed `Query<Arguments, Row>` and `Mutation<Arguments, Output>` handles bind each server reference to its Serde request and response types. The default build includes both client styles and Rustls; optional features select native roots or JSON Schema introspection.
 
+Run `bunx chardb api rust --out <file>` in the app directory to write those handles and their Serde types from the registered queries and tables: one `Serialize` struct per `args` validator (any Standard JSON Schema validator, such as zod 4), one `Deserialize` row struct per selected table, and a `Query` or `Mutation` const per handle. Mutation results and handles without an `args` validator use `serde_json::Value`. Add `--check` in CI to fail when the committed module is stale.
+
 The Rust client supports registered live queries, mutations, reconnects, mutation replay, and auth refresh. Your application must obtain the initial Better Auth JWT and provide refreshed JWTs when the client requests one. The crate does not perform sign-in. It also does not implement files, vectors, `workers-rs`, or `wasm32` transport.
 
 The crate README at `rust/chardb/README.md` covers connection, TLS, timeout, and feature details.
