@@ -10,9 +10,11 @@
 ## Git
 - Branches: `feat/...`, `fix/...`, `chore/...`, `docs/...`, `test/...`.
 - Commits: short conventional style. `fix: fence recovery on stale lease`. No agent `Co-Authored-By` trailers.
+- Pull `main` and read this file from it before branching. A stale checkout may predate the rules.
 
 ## PRs
 - Small, focused, few files. PRs touching many files get closed unread. Don't split one change into many PRs either; pick the natural unit.
+- Never close and recreate a PR over a branch name or trailer. Rename the branch on GitHub and amend the commit.
 - Description says what changed and why in a few lines, then proves it works. Prefer a small table of numbers or a before/after metric over prose. No diagrams.
 - Preferred PRs: tighten, speed up, simplify, delete, or fix code that doesn't do what it was clearly meant to do.
 - Docs and landing page change only when the code change requires it. Most PRs touch neither.
