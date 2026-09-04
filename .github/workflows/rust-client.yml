@@ -2,7 +2,20 @@ name: Rust client
 
 on:
   push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - '**.mdx'
+      - LICENSE
+      - .github/CODEOWNERS
+      - landing/**
   pull_request:
+    paths-ignore:
+      - '**.md'
+      - '**.mdx'
+      - LICENSE
+      - .github/CODEOWNERS
+      - landing/**
 
 permissions:
   contents: read
