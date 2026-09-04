@@ -146,7 +146,7 @@ export const listOrganizationRows = api.query({
 });
 `
         );
-        const buildEntry = async (entry: string, emittedName: string): Promise<Record<string, unknown>> => {
+        const buildEntry = async (entry: string, emittedName: string): Promise<string> => {
             const built = await viteBuild({
                 configFile: false,
                 logLevel: "silent",
@@ -161,13 +161,16 @@ export const listOrganizationRows = api.query({
             if (!chunk?.code) throw new Error("Vite did not emit the browser client chunk");
             const emittedPath = path.join(fixture, emittedName);
             await writeFile(emittedPath, chunk.code);
-            return (await import(pathToFileURL(emittedPath).href)) as Record<string, unknown>;
+            return pathToFileURL(emittedPath).href;
         };
-        const mutations = (await buildEntry(mutationEntry, "browser-mutations.mjs")) as {
+        // Bun caches directory entries on import, so emit both modules first.
+        const mutationModule = await buildEntry(mutationEntry, "browser-mutations.mjs");
+        const queryModule = await buildEntry(queryEntry, "browser-queries.mjs");
+        const mutations = (await import(mutationModule)) as {
             readonly writeOrganizationRow: { readonly __chardbRef?: unknown };
             readonly closedOrganizationWrite: { readonly __chardbRef?: unknown };
         };
-        const queries = (await buildEntry(queryEntry, "browser-queries.mjs")) as {
+        const queries = (await import(queryModule)) as {
             readonly listOrganizationRows: { readonly __chardbRef?: unknown };
         };
         return [
