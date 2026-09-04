@@ -445,9 +445,7 @@ async function runBeforeRestartPhase(control) {
         sockets.push(primary.socket, observer.socket);
         const queryArgs = { organizationId, limit: 50 };
         for (const connection of [primary, observer]) {
-            connection.socket.send(
-                JSON.stringify({ t: "sub", subId: 1, ref: "src/server/queries.ts#listMessages", args: queryArgs })
-            );
+            connection.socket.send(JSON.stringify({ t: "sub", subId: 1, ref: "query#listMessages", args: queryArgs }));
         }
         const [initial, observerInitial] = await Promise.all([
             primary.next(message => (message.t === "snapshot" && message.subId === 1) || message.t === "error"),
@@ -467,7 +465,7 @@ async function runBeforeRestartPhase(control) {
         const firstMutation = {
             t: "mut",
             mutId: "packed-chat-mut-1",
-            ref: "src/server/api.ts#postMessage",
+            ref: "mutation#postMessage",
             args: {
                 id: "packed-message-1",
                 organizationId,
@@ -582,7 +580,7 @@ async function runBeforeRestartPhase(control) {
                 JSON.stringify({
                     t: "mut",
                     mutId,
-                    ref: "src/server/api.ts#postMessage",
+                    ref: "mutation#postMessage",
                     args: {
                         id: `packed-live-message-${index}`,
                         organizationId,
@@ -691,7 +689,7 @@ async function runAfterRestartPhase(control) {
             JSON.stringify({
                 t: "sub",
                 subId: 2,
-                ref: "src/server/queries.ts#listMessages",
+                ref: "query#listMessages",
                 args: { organizationId, limit: 50 },
             })
         );
@@ -832,8 +830,8 @@ async function main() {
                     .map(name => readFile(join(consumer, "dist", "assets", name), "utf8"))
             )
         ).join("\n");
-        assert(browserSource.includes("src/server/api.ts#postMessage"), "Vite output lost the stable mutation ref");
-        assert(browserSource.includes("src/server/queries.ts#listMessages"), "Vite output lost the stable query ref");
+        assert(browserSource.includes("mutation#postMessage"), "Vite output lost the stable mutation ref");
+        assert(browserSource.includes("query#listMessages"), "Vite output lost the stable query ref");
         assert(!browserSource.includes("createUserPreference"), "tutorial bundle contains retired user-tenancy API");
         assert(!browserSource.includes("createGlobalNotice"), "tutorial bundle contains retired global API");
 
