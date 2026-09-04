@@ -53,6 +53,7 @@ jobs:
       - name: Check explicit feature combinations
         run: |
           cargo check --manifest-path rust/Cargo.toml --locked --no-default-features
+          cargo check --manifest-path rust/Cargo.toml --locked --no-default-features --features browser-login
           cargo check --manifest-path rust/Cargo.toml --locked --no-default-features --features introspection
           cargo check --manifest-path rust/Cargo.toml --locked --no-default-features --features sync,rustls-webpki-roots
           cargo check --manifest-path rust/Cargo.toml --locked --no-default-features --features async,rustls-webpki-roots
@@ -107,6 +108,7 @@ jobs:
       - name: Check MSRV feature combinations
         run: |
           cargo check --manifest-path rust/Cargo.toml --locked --no-default-features
+          cargo check --manifest-path rust/Cargo.toml --locked --no-default-features --features browser-login
           cargo check --manifest-path rust/Cargo.toml --locked --no-default-features --features introspection
           cargo check --manifest-path rust/Cargo.toml --locked --no-default-features --features sync,rustls-webpki-roots
           cargo check --manifest-path rust/Cargo.toml --locked --no-default-features --features async,rustls-webpki-roots
