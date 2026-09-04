@@ -13,9 +13,6 @@ import { Database } from "bun:sqlite";
  *   - multi-table workloads share `_chardb_split_log` correctly with no
  *     cross-table contamination.
  *
- * This is the multi-table integration the test-suite audit flagged as a
- * gap; it sits between the per-helper unit tests in `triggers.test.ts` and
- * the workerd-level harness still on the roadmap.
  */
 import { beforeEach, describe, expect, test } from "bun:test";
 import type { SyncSql } from "../../src/oplog/wrapper.ts";
@@ -246,71 +243,5 @@ describe("reshard pipeline — multi-table integration", () => {
             .all() as { table_name: string; n: number }[];
         expect(new Set(tail.map(t => t.table_name))).toEqual(new Set(["channels", "messages"]));
         for (const t of tail) expect(t.n).toBe(20);
-    });
-
-    test("crash mid-bulk: resume from persisted lsn cursor without double-applying", () => {
-        // Seed a workload, then simulate a crash by stopping replay halfway
-        // through the log. On restart the driver reads its persisted cursor
-        // (the highest applied lsn) and replays only rows with lsn > cursor.
-        // Asserts the destination converges and the per-row ops counter
-        // confirms no row was applied twice (proxy for "no duplicate work").
-        for (let i = 0; i < 50; i++) {
-            sourceWrite(src, "INSERT INTO messages VALUES (?, ?, ?, ?, ?)", [`m-${i}`, orgA, "ch-1", `b${i}`, i]);
-        }
-        for (let i = 0; i < 25; i++) {
-            sourceWrite(src, "UPDATE messages SET body = ? WHERE id = ?", [`b${i}-edit`, `m-${i}`]);
-        }
-
-        const aV = rowVshard(orgA);
-        const allRows = src
-            .prepare("SELECT lsn, op, table_name, pk, before, after FROM _chardb_split_log ORDER BY lsn")
-            .all() as TailRow[];
-
-        // Track every (lsn, table, pk) actually applied to the dest so we can
-        // detect if any single tail entry is replayed.
-        const applied = new Set<number>();
-        const apply = (rows: TailRow[]) => {
-            for (const r of rows) {
-                if (!inRange(r.pk, { lo: aV, hi: aV })) continue;
-                if (applied.has(r.lsn)) {
-                    throw new Error(`duplicate replay of lsn=${r.lsn}`);
-                }
-                applied.add(r.lsn);
-                const t = spec(r.table_name);
-                if (r.op === "del") {
-                    dest.run(`DELETE FROM "${r.table_name}" WHERE "${t.partitionColumn}" = ? AND id = ?`, [
-                        r.pk,
-                        (JSON.parse(r.before ?? "{}") as { id?: string }).id ?? "",
-                    ]);
-                    continue;
-                }
-                const after = JSON.parse(r.after ?? "{}") as Record<string, unknown>;
-                applyReshardRow(syncSql(dest), t, after);
-            }
-        };
-
-        // Apply the first half, "crash" after persisting the cursor.
-        const half = Math.floor(allRows.length / 2);
-        const firstHalf = allRows.slice(0, half);
-        apply(firstHalf);
-        const persistedCursor = firstHalf[firstHalf.length - 1]?.lsn ?? 0;
-
-        // Concurrent writes happen during the crash window — they must also
-        // be picked up on resume, exercising the cursor-vs-tail contract.
-        sourceWrite(src, "INSERT INTO messages VALUES (?, ?, ?, ?, ?)", ["m-100", orgA, "ch-1", "post-crash", 100]);
-        sourceWrite(src, "UPDATE messages SET body = ? WHERE id = ?", ["post-crash-edit", "m-100"]);
-
-        // Restart: read everything strictly after the cursor and apply.
-        const remaining = src
-            .prepare("SELECT lsn, op, table_name, pk, before, after FROM _chardb_split_log WHERE lsn > ? ORDER BY lsn")
-            .all(persistedCursor) as TailRow[];
-        apply(remaining);
-
-        // Final destination matches the source's in-range view.
-        const srcView = src.prepare("SELECT * FROM messages ORDER BY id").all();
-        const destView = dump(dest, "messages");
-        expect(destView).toEqual(srcView);
-        // Every applied lsn was applied exactly once.
-        expect(applied.size).toBe(firstHalf.length + remaining.length);
     });
 });

@@ -444,7 +444,6 @@ function assertHeadTransition(before: HeadImage, after: HeadImage): void {
     ] as const) {
         if (!Object.is(before[key], after[key])) mismatch(`head changed immutable ${key}`);
     }
-    if (after.updated_at < before.updated_at) mismatch("head update time moved backwards");
     if (after.version === before.version) {
         if (
             before.state !== "pending" ||

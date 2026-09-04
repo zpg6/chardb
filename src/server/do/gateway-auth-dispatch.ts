@@ -611,6 +611,8 @@ export async function dispatchTrustedQuery(
     deps: TrustedQueryDispatchDeps,
     request: TrustedQueryDispatchRequest
 ): Promise<CdbQueryResponse> {
+    const principalId = request.principalId;
+    const ref = request.ref;
     let rawArgs: RawJson;
     try {
         rawArgs = snapshotCdbQueryArgs(request.args);
@@ -623,7 +625,7 @@ export async function dispatchTrustedQuery(
 
     let routedResult: QueryRouteResponse;
     try {
-        routedResult = await deps.routeQuery({ ref: request.ref, args: rawArgs });
+        routedResult = await deps.routeQuery({ ref, args: rawArgs });
     } catch {
         return mutationFailure("CDB_INVARIANT", "local query routing failed");
     }
@@ -652,23 +654,16 @@ export async function dispatchTrustedQuery(
     ) {
         return mutationFailure("CDB_CROSS_PARTITION", "query intent is not bound to one declared partition");
     }
-    if (routed.authority === "user" && partitionKey !== request.principalId) {
+    if (routed.authority === "user" && partitionKey !== principalId) {
         return mutationFailure("CDB_FORBIDDEN", "user query partition does not match the verified subject");
     }
-    const vshards = new Set(partition.values.map(value => Number(vshardOf([value as string]))));
-    if (vshards.size !== 1) {
-        return mutationFailure("CDB_CROSS_PARTITION", "query intent spans more than one virtual shard");
-    }
-    const vshard = [...vshards][0];
-    if (vshard === undefined) {
-        return mutationFailure("CDB_CROSS_PARTITION", "query intent has no routable virtual shard");
-    }
+    const vshard = Number(vshardOf([partitionKey]));
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
         const projected = await resolvePartitionAuthRoute(
             deps.catalog,
             routed.authority,
-            request.principalId,
+            principalId,
             partitionKey,
             vshard
         );
@@ -679,7 +674,7 @@ export async function dispatchTrustedQuery(
         try {
             response = projectCdbQueryResponse(
                 await deps.cdb(location.shardId).query({
-                    ref: request.ref as ChardbRef,
+                    ref: ref as ChardbRef,
                     args: snapshotCdbQueryArgs(routed.args),
                     placement: { authority: routed.authority, partitionKey },
                     auth: projected.auth,

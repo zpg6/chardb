@@ -7,7 +7,6 @@ import { defineAuth, synthesizeAuthSchema } from "../../src/auth/synthesize.ts";
 import {
     bumpCatalogAuthEpoch,
     initializeCatalogAuthorityStorage,
-    mutateCatalogAuth,
     mutateCatalogAuthWithEffects,
     readCatalogAuthEpoch,
     resolveOrganizationAuthorityFromCatalog,
@@ -66,7 +65,7 @@ describe("Catalog authority store", () => {
     test("owns persisted organization and user authority projections", () => {
         const now = Date.parse("2026-08-25T00:00:00Z");
         db.transaction(() => {
-            mutateCatalogAuth(sql, {
+            mutateCatalogAuthWithEffects(sql, {
                 model: "user",
                 op: "create",
                 payload: {
@@ -79,12 +78,12 @@ describe("Catalog authority store", () => {
                     updatedAt: now,
                 },
             });
-            mutateCatalogAuth(sql, {
+            mutateCatalogAuthWithEffects(sql, {
                 model: "organization",
                 op: "create",
                 payload: { id: "authority-org", name: "Authority Org", slug: "authority", createdAt: now },
             });
-            mutateCatalogAuth(sql, {
+            mutateCatalogAuthWithEffects(sql, {
                 model: "member",
                 op: "create",
                 payload: {
@@ -115,7 +114,7 @@ describe("Catalog authority store", () => {
         });
 
         db.transaction(() =>
-            mutateCatalogAuth(sql, {
+            mutateCatalogAuthWithEffects(sql, {
                 model: "user",
                 op: "update",
                 where: { id: principalId },
@@ -134,7 +133,7 @@ describe("Catalog authority store", () => {
         const principalId = PrincipalId("rollback-user");
         expect(() =>
             db.transaction(() => {
-                mutateCatalogAuth(sql, {
+                mutateCatalogAuthWithEffects(sql, {
                     model: "user",
                     op: "create",
                     payload: {
@@ -183,7 +182,7 @@ describe("Catalog authority store", () => {
                 ["org-b", "Retire"],
                 ["org-c", "Keep"],
             ] as const) {
-                mutateCatalogAuth(sql, {
+                mutateCatalogAuthWithEffects(sql, {
                     model: "organization",
                     op: "create",
                     payload: { id, name, slug: id, createdAt: 1 },

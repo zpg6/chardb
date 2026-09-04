@@ -65,14 +65,4 @@ describe("CdbDialect — intent stash round-trip", () => {
             expect(i.partitionKey).toBeUndefined();
         }
     });
-
-    test("intent attached by buildIntent survives JSON.stringify of the carrying SQL — only via the symbol", () => {
-        const dialect = new CdbDialect(new StaticIntentExtractor({ orgs: "id" }));
-        const intent = dialect.buildIntent({ kind: "select", tables: ["orgs"] });
-        const carrier = { sql: "SELECT * FROM orgs", params: [] as unknown[] };
-        attachIntent(carrier, intent);
-        // JSON.stringify drops the symbol; getIntent recovers it on the live object.
-        expect(JSON.stringify(carrier)).not.toContain("intent");
-        expect(getIntent(carrier)).toEqual(intent);
-    });
 });

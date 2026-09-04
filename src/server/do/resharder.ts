@@ -876,9 +876,16 @@ export class Resharder extends DurableObject<ResharderEnv> {
         );
         if (!startColumns.has("recovery_generation")) {
             sql.exec(
-                "ALTER TABLE migration_start_intent ADD COLUMN recovery_generation INTEGER DEFAULT 0 CHECK (recovery_generation >= 0)"
+                "ALTER TABLE migration_start_intent ADD COLUMN recovery_generation INTEGER CHECK (recovery_generation >= 0)"
             );
+            sql.exec("UPDATE migration_start_intent SET recovery_generation = 0 WHERE src_shard IS NOT NULL");
         }
+        sql.exec(
+            `UPDATE migration_start_intent SET recovery_generation = NULL
+             WHERE state = 'abort_requested' AND recovery_generation = 0
+               AND src_shard IS NULL AND dst_shard IS NULL AND range_lo IS NULL AND range_hi IS NULL
+               AND epoch_at_start IS NULL AND tables_json IS NULL`
+        );
         sql.exec(
             `INSERT OR IGNORE INTO migration_work_cursor (mig_id, turn, updated_at)
              SELECT mig_id, 0, updated_at FROM migration_state`

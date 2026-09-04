@@ -204,6 +204,54 @@ describe("Resharder durable start intent", () => {
         });
     });
 
+    test.each([false, true])(
+        "preserves legacy starts and cancellations with prior generation upgrade=%p",
+        async alreadyUpgraded => {
+            db.exec(`CREATE TABLE migration_start_intent (
+            mig_id TEXT PRIMARY KEY, state TEXT NOT NULL,
+            src_shard TEXT, dst_shard TEXT, range_lo INTEGER, range_hi INTEGER,
+            epoch_at_start INTEGER, tables_json TEXT,
+            created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+        )`);
+            db.query(`INSERT INTO migration_start_intent
+            (mig_id, state, created_at, updated_at) VALUES (?, 'abort_requested', 0, 0)`).run("legacy-canceled");
+            db.query(`INSERT INTO migration_start_intent VALUES (?, 'starting', ?, ?, ?, ?, ?, ?, 0, 0)`).run(
+                split.migId,
+                split.srcShard,
+                split.dstShard,
+                split.rangeLo,
+                split.rangeHi,
+                split.epochAtStart,
+                JSON.stringify([{ columns: table.columns, name: table.name, partitionColumn: table.partitionColumn }])
+            );
+            if (alreadyUpgraded) {
+                db.exec("ALTER TABLE migration_start_intent ADD COLUMN recovery_generation INTEGER DEFAULT 0");
+            }
+            const generations: number[] = [];
+            let resharder = await construct({
+                async beginTopologyOperation(args: { recoveryGeneration: number }) {
+                    generations.push(args.recoveryGeneration);
+                    return { status: "active" as const, ...topologySchema };
+                },
+            });
+
+            await expect(resharder.abort("legacy-canceled")).resolves.toBeUndefined();
+            await expect(resharder.startSplit({ ...split, migId: "legacy-canceled" })).rejects.toMatchObject({
+                code: "CDB_STALE_EPOCH",
+            });
+            await expect(resharder.startSplit(split)).resolves.toBeUndefined();
+            expect(generations).toEqual([0]);
+            await expect(resharder.abort("new-canceled")).resolves.toBeUndefined();
+            resharder = await construct({});
+            for (const migId of ["legacy-canceled", "new-canceled"]) {
+                await expect(resharder.abort(migId)).resolves.toBeUndefined();
+                await expect(resharder.startSplit({ ...split, migId })).rejects.toMatchObject({
+                    code: "CDB_STALE_EPOCH",
+                });
+            }
+        }
+    );
+
     test("a Catalog begin response loss resumes from the exact durable identity after reconstruction", async () => {
         let beginCalls = 0;
         const catalog = {

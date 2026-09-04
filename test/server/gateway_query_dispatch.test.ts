@@ -556,6 +556,47 @@ describe("trusted one-shot query dispatch", () => {
         expect(observed).toEqual(args);
     });
 
+    test("retains the admitted subject and query while routing is pending", async () => {
+        const mutableRequest = { ...request, ref: request.ref as string };
+        const base = workingDeps();
+        const authorizedPrincipals: PrincipalId[] = [];
+        const queries: CdbQueryRequest[] = [];
+        let release!: () => void;
+        const held = new Promise<void>(resolve => {
+            release = resolve;
+        });
+        const pending = dispatchTrustedQuery(
+            {
+                ...base,
+                async routeQuery(input) {
+                    await held;
+                    return base.routeQuery(input);
+                },
+                catalog: {
+                    ...base.catalog,
+                    async resolveOrganizationAuthority(input) {
+                        authorizedPrincipals.push(input.principalId);
+                        return { ...authority, principalId: input.principalId };
+                    },
+                },
+                cdb: () => ({
+                    async query(input) {
+                        queries.push(input);
+                        return { ok: true, result: [{ id: "message-1" }] };
+                    },
+                }),
+            },
+            mutableRequest
+        );
+        mutableRequest.principalId = PrincipalId("user-2");
+        mutableRequest.ref = "queries.ts#privateMessages";
+        release();
+
+        await expect(pending).resolves.toEqual({ ok: true, result: [{ id: "message-1" }] });
+        expect(authorizedPrincipals).toEqual([request.principalId]);
+        expect(queries.map(query => [query.ref, query.auth.userId])).toEqual([[request.ref, request.principalId]]);
+    });
+
     test("validates query RPC envelopes without requiring array results", () => {
         expect(projectCdbQueryResponse({ ok: true, result: { count: 3 } })).toEqual({
             ok: true,

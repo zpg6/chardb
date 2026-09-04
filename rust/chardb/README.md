@@ -31,6 +31,8 @@ Available features:
 - `sync` exports `Client` and `Subscription`.
 - `async` exports `AsyncClient` and `AsyncSubscription`. It does not require
   Tokio or another executor.
+- `browser-login` adds browser authorization with a temporary loopback listener
+  and S256 PKCE. It is opt-in and does not select an HTTP client or executor.
 - `introspection` adds JSON Schema 2020-12 descriptions for application
   argument, mutation-result, and subscription-row types through `schemars`.
 - `rustls-webpki-roots` uses the bundled public root set and is the default.
@@ -312,6 +314,65 @@ subscription fails the refresh.
 
 Call `refresh_auth` to rotate early. A principal change requires a new client.
 `ClientConfig` and client errors never include JWT text in `Debug` or `Display`.
+
+### Browser login for CLI applications
+
+Enable `browser-login` for an interactive native CLI. Authentication remains
+required with or without this feature. Services can supply JWTs through the
+existing token provider without installing browser-launch dependencies.
+
+`BrowserLogin::start` binds `127.0.0.1` on an ephemeral port, generates state and
+an S256 PKCE challenge, and adds the authorization-code parameters to your URL.
+`open_browser` launches the system browser. If launching fails, display
+`authorization_url()` so the user can open it on the same computer.
+`wait` consumes the attempt and closes the listener on success or failure.
+Dropping an unused attempt also closes it. The timeout includes browser time.
+These methods are blocking; async applications should run them on a blocking
+thread. A browser on another computer cannot reach the CLI's loopback listener.
+
+```rust,no_run
+# #[cfg(feature = "browser-login")]
+# fn login() -> chardb_client::Result<()> {
+use chardb_client::browser_login::BrowserLogin;
+use std::time::Duration;
+
+let login = BrowserLogin::start(
+    "https://auth.example/authorize?client_id=my-cli&scope=openid",
+    Duration::from_secs(180),
+)?;
+if login.open_browser().is_err() {
+    eprintln!("Open on this computer: {}", login.authorization_url());
+}
+let authorization = login.wait()?;
+// authorization.exchange(client_id, token_url, &http_client) sends the code,
+// redirect URI, and PKCE verifier using an oauth2::SyncHttpClient.
+# let _ = authorization;
+# Ok(())
+# }
+```
+
+The auth server must support public clients, S256 PKCE, and the redirect URI
+`http://127.0.0.1:{port}/callback` with variable ports. It must issue short-lived,
+one-use codes bound to the client, redirect URI, and PKCE challenge. Configure
+the exchange HTTP client with a timeout and redirect following disabled.
+The SDK rejects non-HTTPS auth endpoints except loopback IPs for local tests.
+
+A Better Auth sign-in page plus its `jwt()` plugin does **not** provide this
+authorization-code endpoint. The application must configure a compatible
+provider or implement that server contract. The callback returns a code, never
+a browser session or JWT. `BrowserAuthorization::exchange` returns the provider's
+token response. Pass its access token to `ClientConfig::with_token` only when
+it is a JWT with the issuer, audience, and claims your Gateway accepts. Otherwise,
+the application must exchange it for a `CharDB` JWT first.
+
+`examples/browser_login.rs` shows the full flow using a test-only `ureq`
+dependency. Run it with `cargo run --manifest-path rust/Cargo.toml --features
+browser-login --example browser_login` and set `CHARDB_AUTHORIZE_URL`,
+`CHARDB_TOKEN_URL`, `CHARDB_OAUTH_CLIENT_ID`, and `CHARDB_WS_URL`. The authorization
+URL may include scopes or other provider parameters; the example adds the client
+ID. The example connects once and exits. Long-running applications must supply a
+token provider that renews credentials. Token persistence, keychain storage, and
+refresh policy belong to the application; the browser helper stores nothing.
 
 ## TLS and plaintext
 

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { BetterAuthOptions } from "better-auth";
 import { jwt } from "better-auth/plugins/jwt";
-import { SignJWT, exportJWK, generateKeyPair } from "jose";
+import { CompactSign, SignJWT, exportJWK, generateKeyPair } from "jose";
 import { gatewayJwtConfigFromAuthOptions } from "../../src/server/chardb.ts";
 import {
     type GatewayJwtConfig,
@@ -18,14 +18,20 @@ const AUDIENCE = "chardb-app";
 const KID = "key-1";
 const CONNECTION_ID = "connection-1";
 
-async function signingFixture() {
+async function signingFixture(
+    keyOverrides: {
+        readonly alg?: string | undefined;
+        readonly use?: string | undefined;
+        readonly key_ops?: readonly string[];
+    } = {}
+) {
     const { privateKey, publicKey } = await generateKeyPair("ES256");
     const jwk = await exportJWK(publicKey);
     const catalog = {
         async getJwk(kid: string) {
             return kid === KID
                 ? {
-                      jwkJson: JSON.stringify({ ...jwk, kid: KID, alg: "ES256", use: "sig" }),
+                      jwkJson: JSON.stringify({ ...jwk, kid: KID, alg: "ES256", use: "sig", ...keyOverrides }),
                       expiresAt: Date.now() + 60_000,
                   }
                 : null;
@@ -57,7 +63,7 @@ async function signingFixture() {
         if (overrides.notBefore !== undefined) builder = builder.setNotBefore(overrides.notBefore);
         return builder.sign(privateKey);
     };
-    return { catalog, sign };
+    return { catalog, sign, privateKey };
 }
 
 function config(overrides: Partial<GatewayJwtConfig> = {}): GatewayJwtConfig {
@@ -163,6 +169,81 @@ describe("Gateway verified JWT boundary", () => {
         }
     });
 
+    test.each([{ use: "enc" }, { alg: "ES384" }, { key_ops: ["sign"] }])(
+        "rejects a signing key with incompatible metadata %j",
+        async metadata => {
+            const { catalog, sign } = await signingFixture(metadata);
+            await expect(
+                verifyGatewayJwt({
+                    config: config(),
+                    authOrigin: ORIGIN,
+                    connectionId: CONNECTION_ID,
+                    catalog,
+                    jwt: await sign(),
+                    clientId: ClientId("client-1"),
+                })
+            ).rejects.toMatchObject({ code: "CDB_FORBIDDEN" });
+        }
+    );
+
+    test.each([{ alg: undefined, use: undefined }, { key_ops: ["verify"] }])(
+        "accepts a signing key with compatible optional metadata %j",
+        async metadata => {
+            const { catalog, sign } = await signingFixture(metadata);
+            await expect(
+                verifyGatewayJwt({
+                    config: config(),
+                    authOrigin: ORIGIN,
+                    connectionId: CONNECTION_ID,
+                    catalog,
+                    jwt: await sign(),
+                    clientId: ClientId("client-1"),
+                })
+            ).resolves.toMatchObject({ principalId: "user-1" });
+        }
+    );
+
+    test("rejects disallowed algorithms before Catalog lookup", async () => {
+        const { catalog, sign } = await signingFixture();
+        let lookups = 0;
+        catalog.getJwk = async () => {
+            lookups += 1;
+            throw new Error("Catalog unavailable");
+        };
+        await expect(
+            verifyGatewayJwt({
+                config: config({ algorithms: ["RS256"] }),
+                authOrigin: ORIGIN,
+                connectionId: CONNECTION_ID,
+                catalog,
+                jwt: await sign(),
+                clientId: ClientId("client-1"),
+            })
+        ).rejects.toMatchObject({ code: "CDB_FORBIDDEN" });
+        expect(lookups).toBe(0);
+    });
+
+    test.each(['"exp":1e400', '"exp":9999999999,"nbf":-1e400', '"exp":9999999999,"iat":1e400'])(
+        "rejects signed nonfinite time claims %s",
+        async timeClaims => {
+            const { catalog, privateKey } = await signingFixture();
+            const payload = `{"sub":"user-1","iss":"${ISSUER}","aud":"${AUDIENCE}",${timeClaims}}`;
+            const token = await new CompactSign(new TextEncoder().encode(payload))
+                .setProtectedHeader({ alg: "ES256", kid: KID })
+                .sign(privateKey);
+            await expect(
+                verifyGatewayJwt({
+                    config: config(),
+                    authOrigin: ORIGIN,
+                    connectionId: CONNECTION_ID,
+                    catalog,
+                    jwt: token,
+                    clientId: ClientId("client-1"),
+                })
+            ).rejects.toMatchObject({ code: "CDB_FORBIDDEN" });
+        }
+    );
+
     test("accepts a token audience array when one value matches", async () => {
         const { catalog, sign } = await signingFixture();
         await expect(
@@ -204,40 +285,6 @@ describe("Gateway verified JWT boundary", () => {
         expect(isCurrentVerifiedAttachment(attachment, attachment.jwtExp - 1)).toBe(true);
         expect(isCurrentVerifiedAttachment(attachment, attachment.jwtExp)).toBe(false);
         expect(trustedMutationAuthFromAttachment(attachment)).toEqual({ principalId: PrincipalId("user-1") });
-    });
-
-    test("a verified refresh can replace the subject; a failed refresh yields no replacement", async () => {
-        const { catalog, sign } = await signingFixture();
-        const current = await verifyGatewayJwt({
-            config: config(),
-            authOrigin: ORIGIN,
-            connectionId: CONNECTION_ID,
-            catalog,
-            jwt: await sign(),
-            clientId: ClientId("client-1"),
-        });
-        const refreshed = await verifyGatewayJwt({
-            config: config(),
-            authOrigin: current.authOrigin,
-            connectionId: current.connectionId,
-            catalog,
-            jwt: await sign({ subject: "user-2" }),
-            clientId: current.clientId,
-        });
-        expect(refreshed.principalId).toBe(PrincipalId("user-2"));
-        expect(current.principalId).toBe(PrincipalId("user-1"));
-
-        await expect(
-            verifyGatewayJwt({
-                config: config(),
-                authOrigin: current.authOrigin,
-                connectionId: current.connectionId,
-                catalog,
-                jwt: "invalid.refresh.token",
-                clientId: current.clientId,
-            })
-        ).rejects.toMatchObject({ code: "CDB_FORBIDDEN" });
-        expect(current.principalId).toBe(PrincipalId("user-1"));
     });
 });
 

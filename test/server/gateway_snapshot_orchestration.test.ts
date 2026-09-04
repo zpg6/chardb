@@ -35,6 +35,8 @@ describe("Gateway snapshot delivery orchestration", () => {
     function fixture(
         options: {
             readonly throwOnSend?: boolean;
+            readonly authorityDelayMs?: number;
+            readonly socketExpiresAt?: number;
             readonly authority?: "fresh" | "changed" | "forbidden" | "refetch" | "retry";
             readonly policyDigest?: string;
         } = {}
@@ -120,6 +122,8 @@ describe("Gateway snapshot delivery orchestration", () => {
             },
             currentPolicyDigest: () => options.policyDigest ?? "policy-delivery",
             checkAuthority: async () => {
+                await Promise.resolve();
+                nowMs += options.authorityDelayMs ?? 0;
                 if (options.authority === "changed") return { kind: "changed" };
                 if (options.authority === "forbidden") return { kind: "retire", code: "CDB_FORBIDDEN" };
                 if (options.authority === "refetch") return { kind: "refetch" };
@@ -136,7 +140,10 @@ describe("Gateway snapshot delivery orchestration", () => {
                     },
                 };
             },
-            exactSocket: () => ({ status: "ready", ws: {} as WebSocket, attachment }),
+            exactSocket: (_identity, checkedAt) =>
+                checkedAt >= (options.socketExpiresAt ?? Number.POSITIVE_INFINITY)
+                    ? { status: "terminal" }
+                    : { status: "ready", ws: {} as WebSocket, attachment },
             settleRetired: (_identity, settlement) => {
                 retired.push(settlement);
             },
@@ -196,6 +203,33 @@ describe("Gateway snapshot delivery orchestration", () => {
         ).toEqual({ dirty_version: 5, delivered_version: 5, last_cookie: cookie, last_snapshot_cookie: cookie });
         expect(work).toEqual([]);
     });
+
+    test.each([{ authorityDelayMs: 100, socketExpiresAt: 100 }, { authorityDelayMs: 10_000 }])(
+        "does not send after authority lookup outlives socket or claim: %j",
+        async options => {
+            const { identity, run, delivery, sent } = fixture(options);
+            await delivery.stage({
+                recoveryGeneration: 0,
+                ...identity,
+                runToken: run.runToken,
+                runVersion: run.runVersion,
+                targetVersion: run.targetVersion,
+                cookie: Cookie("snapshot-expired"),
+                rows: [{ secret: "expired" }],
+                authEpochs: { global: 10, tenant: 11, principal: 12 },
+                nowMs: 25,
+            });
+            const attempt = (await delivery.claimDue(25))[0];
+            if (!attempt) throw new Error("missing snapshot claim");
+            await delivery.sendAttempt(attempt);
+            expect(sent).toEqual([]);
+            if (options.socketExpiresAt === undefined) {
+                expect(await delivery.claimDue(10_025)).toHaveLength(1);
+            } else {
+                expect(db.query("SELECT * FROM _gw_registration_heads").get()).toBeNull();
+            }
+        }
+    );
 
     test("records a bounded retry and preserves the staged rows when transport send throws", async () => {
         const { identity, run, delivery, work, setNowMs } = fixture({ throwOnSend: true });
