@@ -15,6 +15,8 @@ Commands:
   chardb migrations generate --name <name>
                                 append the next immutable additive migration
   chardb vectorize prepare      create or verify required Vectorize metadata indexes
+  chardb api rust --out <file> [--check]
+                                write typed chardb-client handles for the registered queries and mutations
   chardb migrate --url <worker> --id <id> --target <version> [--concurrency <1-32>] [--baseline]
   chardb backups create --url <worker> --out <file> [--at <ISO-8601>]
                                 save a native Durable Object recovery point
@@ -100,6 +102,33 @@ export async function runCli(ctx: CliContext, argv: readonly string[]): Promise<
                 return 0;
             } catch (error) {
                 ctx.stderr(`chardb migrations generate: ${error instanceof Error ? error.message : String(error)}\n`);
+                return 1;
+            }
+        }
+        case "api": {
+            const out = rest[1] === "--out" ? rest[2] : undefined;
+            const check = rest[3] === "--check";
+            if (rest[0] !== "rust" || !out || rest.length !== (check ? 4 : 3)) {
+                ctx.stderr("usage: chardb api rust --out <file> [--check]\n");
+                return 2;
+            }
+            try {
+                const { runApiRust } = await import("./commands/api-rust.ts");
+                await runApiRust(ctx, { out, check });
+                return 0;
+            } catch (error) {
+                ctx.stderr(`chardb api rust: ${error instanceof Error ? error.message : String(error)}\n`);
+                return 1;
+            }
+        }
+        case "__api-inspect": {
+            if (rest.length !== 0) return 2;
+            try {
+                const { runApiInspect } = await import("./commands/api-rust.ts");
+                await runApiInspect(ctx);
+                return 0;
+            } catch (error) {
+                ctx.stderr(`api inspection failed: ${error instanceof Error ? error.message : String(error)}\n`);
                 return 1;
             }
         }

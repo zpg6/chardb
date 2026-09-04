@@ -123,6 +123,8 @@ export type MutationOptions<TArgs = unknown> =
 export type MutationFn<TDb, TArgs, TResult> = ((ctx: MutationCtx<TDb>, args: TArgs) => TResult) & {
     readonly __chardbKind: "mutation";
     readonly __chardbRef: Brand<string, "ChardbRef">;
+    /** The `args` validator itself, read by `chardb api export`. */
+    readonly __chardbArgs?: StandardSchemaV1<unknown, TArgs>;
 };
 
 export type QueryFn<TDb, TArgs, TResult> = ((ctx: QueryCtx<TDb>, args: TArgs) => Promise<TResult>) & {
@@ -130,6 +132,8 @@ export type QueryFn<TDb, TArgs, TResult> = ((ctx: QueryCtx<TDb>, args: TArgs) =>
     readonly __chardbRef: Brand<string, "ChardbRef">;
     /** Server-only validator used before routing intent extraction. */
     readonly __chardbValidateArgs?: (args: unknown) => Promise<TArgs>;
+    /** The `args` validator itself, read by `chardb api export`. */
+    readonly __chardbArgs?: StandardSchemaV1<unknown, TArgs>;
     /** Runtime-compiled plan for the single-source Drizzle query form. */
     readonly __chardbCompilePlan?: (args: TArgs) => RegisteredQueryPlan;
 };
@@ -322,6 +326,7 @@ export function defineMutation<TDb, TArgs extends Record<string, unknown>, TResu
             value: (args: unknown) => runValidatorSync(validator, args),
             enumerable: false,
         });
+        Object.defineProperty(fn, "__chardbArgs", { value: validator, enumerable: false });
     }
     return attachRef(fn, "mutation", explicitRef) as MutationFn<TDb, TArgs, TResult>;
 }
@@ -390,6 +395,7 @@ export function defineQuery<TDb, TArgs extends Record<string, unknown>, TResult>
             enumerable: false,
             configurable: false,
         });
+        Object.defineProperty(fn, "__chardbArgs", { value: validator, enumerable: false });
     }
     return attachRef(fn, "query", explicitRef) as QueryFn<TDb, TArgs, TResult>;
 }
