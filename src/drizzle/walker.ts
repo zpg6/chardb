@@ -357,7 +357,7 @@ function buildIntent(args: ExtractArgs, kind: CdbIntent["kind"], partitionMap: P
         return {
             kind,
             tables,
-            partitionKey: { table: partitionTable, column: partitionColumn, values: [...info.values] },
+            partitionKey: { table: partitionTable, column: partitionColumn, values: [...new Set(info.values)] },
             joinShape: "colocated",
             ...(intervalsField !== undefined ? { intervals: intervalsField } : {}),
         };
@@ -395,5 +395,3 @@ export class StaticIntentExtractor implements IntentExtractor {
         return buildIntent(args, "delete", this.partitionMap);
     }
 }
-
-export const STATIC_EXTRACTOR_FACTORY = (map: PartitionMap): StaticIntentExtractor => new StaticIntentExtractor(map);

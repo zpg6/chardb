@@ -96,7 +96,6 @@ export class GatewaySnapshotDelivery {
     }
 
     async sendAttempt(attempt: GatewaySnapshotSendAttempt): Promise<void> {
-        const sendNowMs = this.deps.nowMs();
         let freshness: GatewayAuthorityFreshness;
         try {
             freshness = await this.deps.checkAuthority(attempt);
@@ -107,13 +106,14 @@ export class GatewaySnapshotDelivery {
                     cookie: attempt.cookie,
                     claimToken: attempt.claimToken,
                     claimVersion: attempt.claimVersion,
-                    nowMs: sendNowMs,
+                    nowMs: this.deps.nowMs(),
                     error,
                 });
             });
             await this.deps.scheduleWork(this.deps.nowMs());
             return;
         }
+        const sendNowMs = this.deps.nowMs();
         if (freshness.kind === "retry") {
             this.deps.storage.transactionSync(() => {
                 failGatewaySnapshotSend(this.deps.storage.sql, {
