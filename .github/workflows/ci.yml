@@ -31,19 +31,47 @@ jobs:
     name: Build exact candidate
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      core: ${{ steps.changes.outputs.core }}
+      landing: ${{ steps.changes.outputs.landing }}
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+        with:
+          fetch-depth: 2
+
+      # On pull_request HEAD is the merge commit, so HEAD^1 is the base tip.
+      # Pushes to main always run everything.
+      - name: Classify changed paths
+        id: changes
+        shell: bash
+        run: |
+          core=false landing=false
+          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then core=true landing=true; fi
+          while IFS= read -r f; do
+            case "$f" in
+              landing/*) landing=true ;;
+              docs/*|*.md|*.mdx|LICENSE|.github/CODEOWNERS) ;;
+              bun.lock|package.json) core=true landing=true ;;
+              *) core=true ;;
+            esac
+          done < <(git diff --name-only HEAD^1 HEAD)
+          echo "core=$core" >> "$GITHUB_OUTPUT"
+          echo "landing=$landing" >> "$GITHUB_OUTPUT"
+          echo "core=$core landing=$landing"
 
       - name: Set up Bun
+        if: steps.changes.outputs.core == 'true'
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.2.22
 
       - name: Install dependencies
+        if: steps.changes.outputs.core == 'true'
         run: bun install --frozen-lockfile
 
       - name: Build and pack candidate once
+        if: steps.changes.outputs.core == 'true'
         shell: bash
         run: |
           bun run build:react
@@ -53,6 +81,7 @@ jobs:
           bun scripts/ci-candidate-artifact.mjs --stage ".ci-pack/${core_tarball}" --react ".ci-pack/${react_tarball}" --directory ci-candidate
 
       - name: Upload exact candidate
+        if: steps.changes.outputs.core == 'true'
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: candidate-${{ github.sha }}
@@ -63,6 +92,7 @@ jobs:
   generated-windows-dev-tree:
     name: Generated Windows dev tree
     needs: candidate
+    if: needs.candidate.outputs.core == 'true'
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -107,11 +137,13 @@ jobs:
           bun-version: 1.2.22
 
       - name: Set up Node for npm consumer smoke tests
+        if: needs.candidate.outputs.core == 'true'
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 22.23.1
 
       - name: Pin npm for consumer smoke tests
+        if: needs.candidate.outputs.core == 'true'
         shell: bash
         run: |
           npm install --global npm@11.6.0
@@ -122,15 +154,18 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Download exact candidate
+        if: needs.candidate.outputs.core == 'true'
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: candidate-${{ github.sha }}
           path: ci-candidate
 
       - name: Verify exact candidate handoff
+        if: needs.candidate.outputs.core == 'true'
         run: bun scripts/ci-candidate-artifact.mjs --verify --directory ci-candidate
 
       - name: Typecheck
+        if: needs.candidate.outputs.core == 'true'
         run: bun run typecheck
 
       - name: Lint
@@ -140,12 +175,15 @@ jobs:
         run: bun run security:history
 
       - name: Test correctness suite
+        if: needs.candidate.outputs.core == 'true'
         run: bun run test:correctness
 
       - name: Build landing page
+        if: needs.candidate.outputs.landing == 'true'
         run: bun run --cwd landing build
 
       - name: Smoke-test exact candidate
+        if: needs.candidate.outputs.core == 'true'
         shell: bash
         env:
           CDB_GENERATED_E2E_PLATFORM_NAME: ubuntu-latest
