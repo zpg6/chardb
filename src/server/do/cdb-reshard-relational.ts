@@ -913,7 +913,10 @@ export function applyReshardSystemTailEntry(
         const ledger = systemMigrationLedger(sql, migId, "organization_tombstone", after.organizationId);
         if (snapshotCoversEntry(ledger, entry.lsn)) {
             if (!existing) systemMismatch(`organization tombstone ${after.organizationId} lost its snapshot row`);
-            if (!exactCdbReshardTombstone(existing, after)) {
+            if (
+                existing.vectorUnprovenTurns < after.vectorUnprovenTurns ||
+                !exactCdbReshardTombstone({ ...after, vectorUnprovenTurns: existing.vectorUnprovenTurns }, existing)
+            ) {
                 systemMismatch(`organization tombstone ${after.organizationId} differs from its covered tail image`);
             }
             return true;

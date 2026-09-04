@@ -1349,6 +1349,38 @@ describe("workerd reshard harness", () => {
         expect(result.skipped).toBeGreaterThan(0);
     }, 15_000);
 
+    test("rejects nonpositive source rowids before starting a split", async () => {
+        for (const rowid of [-1, 0]) {
+            const source = `nonpositive-rowid-${rowid}`;
+            const organizationId = "org-nonpositive-rowid";
+            const vshard = rowVshard(organizationId);
+            await rpc({
+                op: "_exec",
+                target: source,
+                body: {
+                    sql: "INSERT INTO messages (rowid, id, org_id, body) VALUES (?, 'nonpositive', ?, 'preserved'), (1, 'positive', ?, 'preserved')",
+                    params: [rowid, organizationId, organizationId],
+                },
+            });
+            await expect(
+                rpc({
+                    op: "beginReshardSource",
+                    target: source,
+                    body: {
+                        migId: `mig_nonpositive_${rowid + 1}`,
+                        rangeLo: vshard,
+                        rangeHi: vshard,
+                        tables: MOVABLE_TABLES,
+                    },
+                })
+            ).rejects.toThrow("reshard source table messages has nonpositive rowids");
+            for (const table of ["_chardb_split_state", "_chardb_split_identity", "_chardb_split_bulk_watermark"]) {
+                expect(await rpc({ op: "_countRows", target: source, body: { table } })).toEqual({ count: 0 });
+            }
+            expect(await rpc({ op: "_countRows", target: source, body: { table: "messages" } })).toEqual({ count: 2 });
+        }
+    }, 15_000);
+
     test("bulk copy keeps its begin-time rowid watermark despite later out-of-range inserts", async () => {
         const source = "bulk-watermark-source";
         const organizationId = "org-bulk-watermark";

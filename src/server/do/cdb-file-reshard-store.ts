@@ -241,11 +241,9 @@ export class CdbFileReshardStore {
                 continue;
             }
             if (existing) mismatch(`destination file ${row.fileId} predates this fresh-destination migration`);
-            if (!existing) {
-                this.insertFile(row);
-                inserted++;
-            }
-            this.recordApplied(identity.migId, "file", row.fileId, existing ? 0 : 1, watermark);
+            this.insertFile(row);
+            inserted++;
+            this.recordApplied(identity.migId, "file", row.fileId, 1, watermark);
         }
         return Object.freeze({ applied: rows.length, inserted });
     }
@@ -306,8 +304,22 @@ export class CdbFileReshardStore {
                 if (watermark < ledger.snapshot_through_lsn) {
                     mismatch(`organization tombstone ${row.organizationId} snapshot watermark regressed`);
                 }
-                if (!existing || !exactTombstone(existing, row)) {
-                    mismatch(`organization tombstone ${row.organizationId} changed after apply`);
+                if (!existing) mismatch(`organization tombstone ${row.organizationId} disappeared after apply`);
+                if (!exactTombstone(existing, row)) {
+                    if (
+                        watermark === ledger.snapshot_through_lsn ||
+                        row.vectorUnprovenTurns < existing.vectorUnprovenTurns ||
+                        !exactTombstone({ ...existing, vectorUnprovenTurns: row.vectorUnprovenTurns }, row)
+                    ) {
+                        mismatch(`organization tombstone ${row.organizationId} changed after apply`);
+                    }
+                    this.sql.exec(
+                        "UPDATE _chardb_deleted_organizations SET vector_unproven_turns = ? WHERE organization_id = ?",
+                        row.vectorUnprovenTurns,
+                        row.organizationId
+                    );
+                    if (this.sql.changes() !== 1)
+                        mismatch(`organization tombstone ${row.organizationId} disappeared after apply`);
                 }
                 this.updateSnapshotWatermark(identity.migId, "organization_tombstone", row.organizationId, watermark);
                 continue;
@@ -315,17 +327,9 @@ export class CdbFileReshardStore {
             if (existing) {
                 mismatch(`destination organization tombstone ${row.organizationId} predates this migration`);
             }
-            if (!existing) {
-                this.insertTombstone(row);
-                inserted++;
-            }
-            this.recordApplied(
-                identity.migId,
-                "organization_tombstone",
-                row.organizationId,
-                existing ? 0 : 1,
-                watermark
-            );
+            this.insertTombstone(row);
+            inserted++;
+            this.recordApplied(identity.migId, "organization_tombstone", row.organizationId, 1, watermark);
         }
         return Object.freeze({ applied: rows.length, inserted });
     }
