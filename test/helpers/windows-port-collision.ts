@@ -1,3 +1,9 @@
+import { createServer } from "node:net";
+
+export function createPortBlocker() {
+    return createServer(socket => socket.destroy());
+}
+
 const OCCUPIED_SOCKET_ERROR = /(?:address already in use|eaddrinuse|failed to listen|port .*already in use|#10013\b)/i;
 
 export function isOccupiedPortFailure(output: string, port: number): boolean {
