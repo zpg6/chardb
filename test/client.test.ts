@@ -927,6 +927,34 @@ describe("createChardbClient — wire round-trip", () => {
         });
     });
 
+    test("rejects data frames before the authenticated welcome", async () => {
+        const diagnostics: unknown[] = [];
+        const c = client({
+            clientId: "c-pre-welcome-data",
+            onSessionError: diagnostic => diagnostics.push(diagnostic),
+        });
+        await flush();
+        const ws = fakeWebSocket();
+        const seen: RawJson[][] = [];
+        c.subscribe("queries.ts#listMessages", {}, rows => seen.push(rows));
+        const mutation = c.mutate("src/api.ts#post", {});
+
+        ws.emit({
+            t: "poke",
+            cookie: Cookie("c-pre-welcome-data:1"),
+            patches: [{ op: "put", subId: SubId(1), rowKey: "forged", row: { secret: true } }],
+        });
+        await flush();
+
+        expect(c.state).toBe("closed");
+        expect(seen).toEqual([[]]);
+        expect(diagnostics).toEqual([{ code: "CDB_INVARIANT", reason: "invalid-handshake-frame" }]);
+        await expect(mutation).rejects.toMatchObject({
+            code: "CDB_INVARIANT",
+            message: "server sent an invalid CharDB handshake message",
+        });
+    });
+
     test("a valid client-to-server message received from the server fails the session", async () => {
         const c = client();
         await flush();
@@ -983,6 +1011,34 @@ describe("createChardbClient — wire round-trip", () => {
             c.close();
             timeoutSpy.restore();
         }
+    });
+
+    test("rejects a second welcome after the session is open", async () => {
+        const c = client({ clientId: "c-duplicate-welcome" });
+        await flush();
+        const ws = fakeWebSocket();
+        await welcome(ws, "c-duplicate-welcome:0");
+        const seen: RawJson[][] = [];
+        c.subscribe("queries.ts#listMessages", {}, rows => seen.push(rows));
+        ws.emit({
+            t: "snapshot",
+            subId: SubId(1),
+            cookie: Cookie("c-duplicate-welcome:1"),
+            rows: [{ id: "authoritative" }],
+        });
+        expect(seen).toEqual([[{ id: "authoritative" }]]);
+
+        ws.emit({
+            t: "welcome",
+            protocolV: PROTOCOL_V,
+            baseCookie: Cookie("c-duplicate-welcome:0"),
+            region: "test",
+        });
+        await flush();
+
+        expect(c.state).toBe("closed");
+        expect(seen).toEqual([[{ id: "authoritative" }], []]);
+        expect(ws.readyState).toBe(FakeWS.CLOSED);
     });
 
     test("accepts an inbound text envelope at the exact 1 MiB transport limit", async () => {

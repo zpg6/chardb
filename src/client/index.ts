@@ -9,7 +9,7 @@
 
 import { uuidv7 } from "uuidv7";
 import { CdbError, type CdbErrorCode, isCdbError } from "../errors.ts";
-import { ChardbRef, ClientId, type Cookie, type CorrelationId, MutId, type RawJson, SubId } from "../types.ts";
+import { ChardbRef, ClientId, type Cookie, MutId, type RawJson, SubId } from "../types.ts";
 import { PROTOCOL_V, type RowPatch, type Up, checkProtocolV, decodeDown, encodeWire } from "../wire.ts";
 import { assertSerializedSize, snapshotMutationArguments, snapshotSubscriptionArguments } from "./serialized-json.ts";
 
@@ -613,6 +613,15 @@ export function createDeferredChardbClientController(
 
     function onWire(raw: string, attempt: number, socket: WebSocket, jwtRefreshClaims: JwtRefreshClaims | null): void {
         const msg = decodeDown(raw);
+        if (state === "connecting") {
+            const validHandshakeMessage =
+                msg.t === "welcome" ||
+                (msg.t === "error" && msg.subId === undefined) ||
+                (msg.t === "mustRefetch" && msg.reason === "protocolMismatch");
+            if (!validHandshakeMessage) throw new TypeError("server sent data before welcome");
+        } else if (msg.t === "welcome" || (msg.t === "mustRefetch" && msg.reason === "protocolMismatch")) {
+            throw new TypeError("server sent a handshake frame after welcome");
+        }
         switch (msg.t) {
             case "welcome":
                 if (checkProtocolV(msg.protocolV)) {
@@ -715,7 +724,7 @@ export function createDeferredChardbClientController(
                     return;
                 }
                 if (msg.subId !== undefined) {
-                    applySubscriptionError(msg.code, msg.retryable, msg.subId, msg.correlationId);
+                    applySubscriptionError(msg.retryable, msg.subId);
                     return;
                 }
                 if (msg.retryable) {
@@ -843,12 +852,7 @@ export function createDeferredChardbClientController(
         assertSerializedSize(rows, MAX_SUBSCRIPTION_BYTES, subject);
     }
 
-    function applySubscriptionError(
-        code: CdbErrorCode,
-        retryable: boolean,
-        subId: SubId,
-        correlationId: CorrelationId
-    ): void {
+    function applySubscriptionError(retryable: boolean, subId: SubId): void {
         const sub = subs.get(subId);
         if (!sub || sub.state === "error" || sub.state === "closed") return;
         const notifyRefetch = sub.state !== "refetching" || sub.rows.length > 0 || sub.lastSnapshotCookie !== undefined;
@@ -859,8 +863,6 @@ export function createDeferredChardbClientController(
         releaseResumeRetainedSub(subId, sub);
         if (!retryable || notifyRefetch) notify(sub);
         if (retryable && !terminated && subs.get(subId) === sub) scheduleSubscriptionRetry(sub);
-        void correlationId;
-        void code;
     }
 
     function clearMutationTimeout(mutation: PendingMutation): void {
@@ -1086,8 +1088,6 @@ export function createDeferredChardbClientController(
     function close(): void {
         failSession("CDB_STREAM_ABORTED", "CharDB client closed before pending work settled", "client-close", "closed");
     }
-
-    void isCdbError;
 
     const client: ChardbClient = {
         subscribe,

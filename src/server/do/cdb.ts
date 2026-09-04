@@ -2234,9 +2234,8 @@ export class Cdb extends DurableObject<CdbEnv> {
                 ref: request.ref,
             });
             this.assertRecoveryGeneration(request.recoveryGeneration);
-            if (request.placement) this.assertRoutingEpoch(request.schemaEpoch, request.placement);
-            else this.resharding.assertUnplacedRoutingAdmission();
-            if (request.placement?.authority === "organization") {
+            this.assertRoutingEpoch(request.schemaEpoch, request.placement);
+            if (request.placement.authority === "organization") {
                 this.assertOrganizationActive(request.placement.partitionKey, adaptSqlStorage(this.ctx.storage.sql));
             }
             this.assertActiveSchemaEpoch(request.domainSchemaEpoch);
