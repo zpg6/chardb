@@ -356,3 +356,47 @@ fn accepts_a_callback_delivered_in_separate_writes() {
     assert!(response.starts_with("HTTP/1.1 200"));
     assert_eq!(worker.join().unwrap().unwrap().code.secret(), "split");
 }
+
+#[test]
+fn ipv6_loopback_is_accepted_for_authorization_and_exchange() {
+    use chardb_client::browser_login::{AuthorizationCode, BrowserAuthorization, RedirectUrl};
+    use oauth2::{http, HttpRequest, HttpResponse, TokenResponse};
+
+    for host in ["[::1]", "[0:0:0:0:0:0:0:1]"] {
+        let login = BrowserLogin::start(
+            &format!("http://{host}/authorize?client_id=cli"),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(
+            Url::parse(login.authorization_url()).unwrap().host_str(),
+            Some("[::1]")
+        );
+        let grant = BrowserAuthorization {
+            code: AuthorizationCode::new("code".to_owned()),
+            pkce_verifier: PkceCodeVerifier::new("verifier".repeat(8)),
+            redirect_uri: RedirectUrl::new(params(&login)["redirect_uri"].clone()).unwrap(),
+        };
+        let http = |request: HttpRequest| -> std::result::Result<HttpResponse, std::io::Error> {
+            assert_eq!(request.uri().to_string(), "http://[::1]/token");
+            Ok(http::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(br#"{"access_token":"test-token","token_type":"Bearer"}"#.to_vec())
+                .unwrap())
+        };
+        let tokens = grant
+            .exchange("cli", &format!("http://{host}/token"), &http)
+            .unwrap();
+        assert_eq!(tokens.access_token().secret(), "test-token");
+    }
+    assert_eq!(
+        BrowserLogin::start(
+            "http://[::2]/authorize?client_id=cli",
+            Duration::from_secs(5)
+        )
+        .unwrap_err()
+        .kind(),
+        ErrorKind::Configuration
+    );
+}
