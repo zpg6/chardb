@@ -711,7 +711,7 @@ export class Catalog extends DurableObject<CatalogEnv> {
                     this.assertOrganizationDeletionResult(result, handoff.organizationId);
                     return { handoff, error: null } as const;
                 } catch (error) {
-                    return { handoff, error } as const;
+                    return { handoff, error: error instanceof Error ? error : new Error(String(error)) } as const;
                 }
             })
         );
@@ -773,7 +773,7 @@ export class Catalog extends DurableObject<CatalogEnv> {
                     this.assertAuthInvalidationResult(result, request);
                     return { target, error: null } as const;
                 } catch (error) {
-                    return { target, error } as const;
+                    return { target, error: error instanceof Error ? error : new Error(String(error)) } as const;
                 }
             })
         );
@@ -813,7 +813,7 @@ export class Catalog extends DurableObject<CatalogEnv> {
                             this.assertAuthInvalidationResult(result, request);
                             return null;
                         } catch (error) {
-                            return error;
+                            return error instanceof Error ? error : new Error(String(error));
                         }
                     })
                 );
@@ -850,7 +850,7 @@ export class Catalog extends DurableObject<CatalogEnv> {
                     this.assertAuthInvalidationResult(result, request);
                     return null;
                 } catch (error) {
-                    return error;
+                    return error instanceof Error ? error : new Error(String(error));
                 }
             })
         );

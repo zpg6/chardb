@@ -436,14 +436,6 @@ export function mutateCatalogAuthWithEffects(
     };
 }
 
-export function mutateCatalogAuth(sql: CatalogSql, args: CatalogAuthMutationRequest): CatalogAuthMutationResult {
-    return mutateCatalogAuthWithEffects(sql, args).result;
-}
-
-export function incrementCatalogAuth(sql: CatalogSql, args: CatalogAuthIncrementRequest): CatalogAuthIncrementResult {
-    return incrementCatalogAuthWithEffects(sql, args).result;
-}
-
 export function incrementCatalogAuthWithEffects(
     sql: CatalogSql,
     args: CatalogAuthIncrementRequest

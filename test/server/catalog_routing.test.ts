@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { CatalogAuthInvalidationStore } from "../../src/server/do/catalog-auth-invalidation-store.ts";
 import { CatalogOrganizationDeletionStore } from "../../src/server/do/catalog-organization-deletion-store.ts";
 import { Catalog, configureCatalogRuntime } from "../../src/server/do/catalog.ts";
 import { adaptSqlStorage } from "../../src/server/do/sql_adapter.ts";
@@ -142,6 +143,60 @@ describe("Catalog routing inventory", () => {
         });
     });
 
+    for (const scope of ["tenant", "principal", "global"] as const) {
+        test.each(scope === "tenant" ? [null] : [null, undefined, false, 0, ""])(
+            `retries ${scope} invalidation after rejecting with %p`,
+            async failure => {
+                const calls: string[] = [];
+                let failing = true;
+                const shardNamespace = {
+                    idFromName: (name: string) => ({ name }),
+                    get: (id: { name: string }) => ({
+                        async invalidateAuthScope(input: Record<string, unknown>) {
+                            calls.push(id.name);
+                            if (failing && id.name === "ShardDO_0") throw failure;
+                            return { ...input, accepted: true, registrations: 0, changeSeq: 0 };
+                        },
+                    }),
+                } as unknown as DurableObjectNamespace;
+                catalog = new Catalog(state, withRecoveryEnv({ CDB_SHARD: shardNamespace }));
+                await bootstrap;
+                db.exec("DELETE FROM catalog_ranges");
+                db.run("INSERT INTO catalog_ranges VALUES (0, 8191, 'ShardDO_0')");
+                db.run("INSERT INTO catalog_ranges VALUES (8192, 16383, 'ShardDO_1')");
+                const store = new CatalogAuthInvalidationStore(adaptSqlStorage(state.storage.sql));
+                if (scope === "tenant") store.enqueueTargets(scope, "org", 1, ["ShardDO_0", "ShardDO_1"], 100);
+                else if (scope === "principal") store.enqueuePrincipal("user", 1, 100);
+                else store.enqueueGlobal(1, 100);
+                const pending = () =>
+                    scope === "tenant"
+                        ? (store.targets(scope, "org")[0] ?? null)
+                        : scope === "principal"
+                          ? store.principal("user")
+                          : store.global();
+                const originalNow = Date.now;
+                try {
+                    Date.now = () => 100;
+                    await catalog.alarm();
+                    expect(calls).toEqual(["ShardDO_0", "ShardDO_1"]);
+                    expect(pending()).toMatchObject({ attempts: 1, nextAttemptAt: 1_100, lastError: String(failure) });
+                    if (scope !== "tenant") expect(pending()).toMatchObject({ cursorShardId: null });
+                    else expect(store.targets(scope, "org")).toHaveLength(1);
+
+                    failing = false;
+                    Date.now = () => 1_100;
+                    await catalog.alarm();
+                    expect(calls.filter(id => id === "ShardDO_0")).toHaveLength(2);
+                    Date.now = () => 1_101;
+                    await catalog.alarm();
+                    expect(pending()).toBeNull();
+                } finally {
+                    Date.now = originalNow;
+                }
+            }
+        );
+    }
+
     test("projects auth epochs to both topology participants through cutover, then only the destination", async () => {
         const calls: Array<{
             shardId: string;
@@ -214,110 +269,115 @@ describe("Catalog routing inventory", () => {
         ]);
     });
 
-    test("bounds a legacy persisted multi-shard deletion inventory and retries only its failed target", async () => {
-        const journal = defineMigrations([
-            {
-                version: 1,
-                name: "organization_files",
-                statements: ["SELECT 1"],
-                resources: [
-                    {
-                        kind: "file",
-                        version: 1,
-                        table: "messages",
-                        column: "attachment",
-                        primaryKey: "id",
-                        organizationColumn: "organization_id",
-                        maxSize: 8,
-                        contentTypes: ["image/png"],
-                    },
-                ],
-            },
-        ]);
-        const ConfiguredCatalog = configureCatalogRuntime({ migrations: () => journal });
-        const calls = new Map<string, number>();
-        const shardNamespace = {
-            idFromName: (name: string) => ({ name }),
-            get: (id: { name: string }) => ({
-                async deleteOrganizationFiles(input: { organizationId: string }) {
-                    const count = (calls.get(id.name) ?? 0) + 1;
-                    calls.set(id.name, count);
-                    if (id.name === "ShardDO_00" && count === 1) throw new Error("injected shard outage");
-                    return { organizationId: input.organizationId, accepted: true } as const;
+    test.each([new Error("injected shard outage"), null])(
+        "bounds a legacy persisted multi-shard deletion inventory and retries its failed target for %p",
+        async failure => {
+            const journal = defineMigrations([
+                {
+                    version: 1,
+                    name: "organization_files",
+                    statements: ["SELECT 1"],
+                    resources: [
+                        {
+                            kind: "file",
+                            version: 1,
+                            table: "messages",
+                            column: "attachment",
+                            primaryKey: "id",
+                            organizationColumn: "organization_id",
+                            maxSize: 8,
+                            contentTypes: ["image/png"],
+                        },
+                    ],
                 },
-            }),
-        } as unknown as DurableObjectNamespace;
-        let ready: Promise<unknown> = Promise.resolve();
-        (
-            state as unknown as { blockConcurrencyWhile: (callback: () => Promise<unknown>) => void }
-        ).blockConcurrencyWhile = callback => {
-            ready = callback();
-        };
-        let configured = new ConfiguredCatalog(state, withRecoveryEnv({ CDB_SHARD: shardNamespace }));
-        await ready;
+            ]);
+            const ConfiguredCatalog = configureCatalogRuntime({ migrations: () => journal });
+            const calls = new Map<string, number>();
+            const shardNamespace = {
+                idFromName: (name: string) => ({ name }),
+                get: (id: { name: string }) => ({
+                    async deleteOrganizationFiles(input: { organizationId: string }) {
+                        const count = (calls.get(id.name) ?? 0) + 1;
+                        calls.set(id.name, count);
+                        if (id.name === "ShardDO_00" && count === 1) throw failure;
+                        return { organizationId: input.organizationId, accepted: true } as const;
+                    },
+                }),
+            } as unknown as DurableObjectNamespace;
+            let ready: Promise<unknown> = Promise.resolve();
+            (
+                state as unknown as { blockConcurrencyWhile: (callback: () => Promise<unknown>) => void }
+            ).blockConcurrencyWhile = callback => {
+                ready = callback();
+            };
+            let configured = new ConfiguredCatalog(state, withRecoveryEnv({ CDB_SHARD: shardNamespace }));
+            await ready;
 
-        const sql = adaptSqlStorage(state.storage.sql);
-        state.storage.transactionSync(() => {
-            sql.exec("DELETE FROM catalog_ranges");
-            for (let index = 0; index < 35; index++) {
+            const sql = adaptSqlStorage(state.storage.sql);
+            state.storage.transactionSync(() => {
+                sql.exec("DELETE FROM catalog_ranges");
+                for (let index = 0; index < 35; index++) {
+                    sql.exec(
+                        "INSERT INTO catalog_ranges (lo, hi, shard_id) VALUES (?, ?, ?)",
+                        index,
+                        index === 34 ? 16_383 : index,
+                        `ShardDO_${String(index).padStart(2, "0")}`
+                    );
+                }
                 sql.exec(
-                    "INSERT INTO catalog_ranges (lo, hi, shard_id) VALUES (?, ?, ?)",
-                    index,
-                    index === 34 ? 16_383 : index,
-                    `ShardDO_${String(index).padStart(2, "0")}`
-                );
-            }
-            sql.exec(
-                `UPDATE catalog_schema_state
+                    `UPDATE catalog_schema_state
                  SET active_version = 1, active_epoch = 2, active_digest = ?
                  WHERE singleton = 1`,
-                journal.digest
-            );
-            const deletions = new CatalogOrganizationDeletionStore(sql);
-            deletions.record("org-bounded", 0, 100);
-            // Rows written by the former all-shard design must still drain after upgrade.
-            deletions.recordShards(
-                "org-bounded",
-                Array.from({ length: 35 }, (_, index) => `ShardDO_${String(index).padStart(2, "0")}`),
-                100
-            );
-        });
-
-        const originalNow = Date.now;
-        try {
-            Date.now = () => 100;
-            await configured.alarm();
-            expect([...calls.values()].reduce((sum, count) => sum + count, 0)).toBe(32);
-            expect(new CatalogOrganizationDeletionStore(sql).shards("org-bounded")).toEqual(
-                expect.arrayContaining([
-                    expect.objectContaining({ shardId: "ShardDO_00", status: "pending", attempts: 1 }),
-                    expect.objectContaining({ shardId: "ShardDO_01", status: "complete", attempts: 0 }),
-                    expect.objectContaining({ shardId: "ShardDO_34", status: "pending", attempts: 0 }),
-                ])
-            );
-
-            ready = Promise.resolve();
-            configured = new ConfiguredCatalog(state, withRecoveryEnv({ CDB_SHARD: shardNamespace }));
-            await ready;
-            Date.now = () => 101;
-            await configured.alarm();
-            expect(calls.get("ShardDO_01")).toBe(1);
-            expect(calls.get("ShardDO_34")).toBe(1);
-
-            Date.now = () => 1_100;
-            await configured.alarm();
-            expect(calls.get("ShardDO_00")).toBe(2);
-            expect(
-                [...calls.entries()].filter(([shardId]) => shardId !== "ShardDO_00").every(([, count]) => count === 1)
-            ).toBe(true);
-            expect(new CatalogOrganizationDeletionStore(sql).read("org-bounded")).toMatchObject({
-                status: "complete",
-                completedAt: 1_100,
+                    journal.digest
+                );
+                const deletions = new CatalogOrganizationDeletionStore(sql);
+                deletions.record("org-bounded", 0, 100);
+                // Rows written by the former all-shard design must still drain after upgrade.
+                deletions.recordShards(
+                    "org-bounded",
+                    Array.from({ length: 35 }, (_, index) => `ShardDO_${String(index).padStart(2, "0")}`),
+                    100
+                );
             });
-        } finally {
-            Date.now = originalNow;
+
+            const originalNow = Date.now;
+            try {
+                Date.now = () => 100;
+                await configured.alarm();
+                expect([...calls.values()].reduce((sum, count) => sum + count, 0)).toBe(32);
+                expect(new CatalogOrganizationDeletionStore(sql).shards("org-bounded")).toEqual(
+                    expect.arrayContaining([
+                        expect.objectContaining({ shardId: "ShardDO_00", status: "pending", attempts: 1 }),
+                        expect.objectContaining({ shardId: "ShardDO_01", status: "complete", attempts: 0 }),
+                        expect.objectContaining({ shardId: "ShardDO_34", status: "pending", attempts: 0 }),
+                    ])
+                );
+
+                ready = Promise.resolve();
+                configured = new ConfiguredCatalog(state, withRecoveryEnv({ CDB_SHARD: shardNamespace }));
+                await ready;
+                Date.now = () => 101;
+                await configured.alarm();
+                expect(calls.get("ShardDO_01")).toBe(1);
+                expect(calls.get("ShardDO_34")).toBe(1);
+
+                Date.now = () => 1_100;
+                await configured.alarm();
+                expect(calls.get("ShardDO_00")).toBe(2);
+                expect(
+                    [...calls.entries()]
+                        .filter(([shardId]) => shardId !== "ShardDO_00")
+                        .every(([, count]) => count === 1)
+                ).toBe(true);
+                expect(new CatalogOrganizationDeletionStore(sql).read("org-bounded")).toMatchObject({
+                    status: "complete",
+                    completedAt: 1_100,
+                });
+            } finally {
+                Date.now = originalNow;
+            }
         }
-    });
+    );
 
     test("recovers a vector-backed deletion through the legacy shard cleanup RPC", async () => {
         const journal = defineMigrations([
