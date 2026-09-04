@@ -8,7 +8,7 @@
         "access": "public"
     },
     "homepage": "https://chardb.dev",
-    "packageManager": "bun@1.2.22",
+    "packageManager": "bun@1.4.1",
     "engines": {
         "bun": ">=1.2.22",
         "node": ">=22"
