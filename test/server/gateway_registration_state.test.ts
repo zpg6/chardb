@@ -6,8 +6,9 @@ import {
     GATEWAY_REGISTRATION_DDL,
     type GatewayRegistrationAdvance,
     type GatewayRegistrationInstall,
+    activateGatewaySubscription,
     advanceGatewayRegistration,
-    beginInitialGatewayQuery,
+    claimDirtyGatewayRegistration,
     cleanupGatewayRegistration,
     ensureGatewayRegistrationColumns,
     installGatewayRegistration,
@@ -15,7 +16,6 @@ import {
     retireCurrentGatewayRegistration,
     retireCurrentGatewayRegistrationsForConnection,
     retireGatewayRegistration,
-    settleInitialGatewaySnapshot,
 } from "../../src/server/do/gateway-registration-store.ts";
 import { projectCdbSubscriptionResponse } from "../../src/server/do/gateway.ts";
 import type { LiveSubscriptionId } from "../../src/server/rpc.ts";
@@ -254,9 +254,12 @@ describe("Gateway durable registration generations", () => {
     test("explicit retire removes the head and retains a cleanup row", () => {
         const current = registration("registration-retire");
         db.transaction(() => installGatewayRegistration(sql, current))();
+        expect(db.transaction(() => activateGatewaySubscription(sql, { ...current, changeSeq: 3, nowMs: 200 }))()).toBe(
+            true
+        );
         expect(
-            db.transaction(() => beginInitialGatewayQuery(sql, { ...current, changeSeq: 3, nowMs: 200 }))()
-        ).toMatchObject({ baseline: 3, runVersion: 1 });
+            db.transaction(() => claimDirtyGatewayRegistration(sql, { ...current, nowMs: 200, leaseExpiresAt: 300 }))()
+        ).toMatchObject({ targetVersion: 3, runVersion: 1 });
 
         expect(db.transaction(() => retireGatewayRegistration(sql, current, current.registrationId, 250))()).toBe(true);
         expect(db.query("SELECT * FROM _gw_registration_heads").all()).toEqual([]);
@@ -340,169 +343,6 @@ describe("Gateway durable registration generations", () => {
             retry_at: 30_150,
         });
         expect(cleanupGatewayRegistration(sql, pending, pending.registrationId)).toBe(false);
-    });
-
-    test("begins an initial query without claiming delivery before snapshot settlement", () => {
-        const current = registration("registration-begin");
-        db.transaction(() => installGatewayRegistration(sql, current))();
-        db.query("UPDATE _gw_registration_generations SET dirty_version = 9 WHERE registration_id = ?").run(
-            current.registrationId
-        );
-
-        const run = db.transaction(() =>
-            beginInitialGatewayQuery(sql, {
-                ...current,
-                changeSeq: 5,
-                nowMs: 200,
-            })
-        )();
-        expect(run).toEqual({ baseline: 9, runToken: expect.any(String), runVersion: 1 });
-        expect(run?.runToken).not.toBe("");
-        expect(
-            db
-                .query(
-                    `SELECT lifecycle, cdb_state, dirty_version, delivered_version,
-                            run_token, run_target_version, run_version, updated_at
-                     FROM _gw_registration_generations WHERE registration_id = ?`
-                )
-                .get(current.registrationId)
-        ).toEqual({
-            lifecycle: "installing",
-            cdb_state: "active",
-            dirty_version: 9,
-            delivered_version: 0,
-            run_token: run?.runToken,
-            run_target_version: 9,
-            run_version: 1,
-            updated_at: 200,
-        });
-        expect(
-            db.transaction(() => beginInitialGatewayQuery(sql, { ...current, changeSeq: 20, nowMs: 300 }))()
-        ).toBeNull();
-
-        const subscriptionAhead = registration("registration-subscription-ahead", "principal-2", {
-            clientId: ClientId("client-2"),
-            subId: SubId(8),
-        });
-        db.transaction(() => installGatewayRegistration(sql, subscriptionAhead))();
-        expect(
-            db.transaction(() => beginInitialGatewayQuery(sql, { ...subscriptionAhead, changeSeq: 12, nowMs: 250 }))()
-        ).toMatchObject({ baseline: 12, runVersion: 1 });
-    });
-
-    test("settles only the token-owning current initial query without losing concurrent dirtiness", () => {
-        const current = registration("registration-settle");
-        db.transaction(() => installGatewayRegistration(sql, current))();
-        const run = db.transaction(() => beginInitialGatewayQuery(sql, { ...current, changeSeq: 6, nowMs: 200 }))();
-        if (!run) throw new Error("initial query did not begin");
-        db.query("UPDATE _gw_registration_generations SET dirty_version = 14 WHERE registration_id = ?").run(
-            current.registrationId
-        );
-
-        expect(
-            db.transaction(() =>
-                settleInitialGatewaySnapshot(sql, {
-                    ...current,
-                    runToken: "wrong-token",
-                    lastCookie: Cookie("cookie-wrong"),
-                    nowMs: 300,
-                })
-            )()
-        ).toBe(false);
-        expect(
-            db
-                .query(
-                    `SELECT lifecycle, dirty_version, delivered_version, run_token, run_target_version
-                     FROM _gw_registration_generations WHERE registration_id = ?`
-                )
-                .get(current.registrationId)
-        ).toEqual({
-            lifecycle: "installing",
-            dirty_version: 14,
-            delivered_version: 0,
-            run_token: run.runToken,
-            run_target_version: 6,
-        });
-        expect(
-            db.transaction(() =>
-                settleInitialGatewaySnapshot(sql, {
-                    ...current,
-                    connectionId: "wrong-connection",
-                    runToken: run.runToken,
-                    lastCookie: Cookie("cookie-wrong"),
-                    nowMs: 300,
-                })
-            )()
-        ).toBe(false);
-        expect(
-            db.transaction(() =>
-                settleInitialGatewaySnapshot(sql, {
-                    ...current,
-                    runToken: run.runToken,
-                    lastCookie: Cookie("cookie-settled"),
-                    nowMs: 400,
-                })
-            )()
-        ).toBe(true);
-        expect(
-            db
-                .query(
-                    `SELECT lifecycle, cdb_state, dirty_version, delivered_version,
-                            run_token, run_target_version, run_version, last_cookie
-                     FROM _gw_registration_generations WHERE registration_id = ?`
-                )
-                .get(current.registrationId)
-        ).toEqual({
-            lifecycle: "active",
-            cdb_state: "active",
-            dirty_version: 14,
-            delivered_version: 6,
-            run_token: null,
-            run_target_version: null,
-            run_version: 2,
-            last_cookie: "cookie-settled",
-        });
-        expect(
-            db.transaction(() =>
-                settleInitialGatewaySnapshot(sql, {
-                    ...current,
-                    runToken: run.runToken,
-                    lastCookie: Cookie("cookie-replayed"),
-                    nowMs: 500,
-                })
-            )()
-        ).toBe(false);
-    });
-
-    test("an old initial-query token cannot settle after head replacement", () => {
-        const old = registration("registration-cas-old");
-        db.transaction(() => installGatewayRegistration(sql, old))();
-        const run = db.transaction(() => beginInitialGatewayQuery(sql, { ...old, changeSeq: 2, nowMs: 200 }))();
-        if (!run) throw new Error("initial query did not begin");
-        const replacement = registration("registration-cas-new", "principal-1", { nowMs: 300 });
-        db.transaction(() => installGatewayRegistration(sql, replacement))();
-
-        expect(
-            db.transaction(() =>
-                settleInitialGatewaySnapshot(sql, {
-                    ...old,
-                    runToken: run.runToken,
-                    lastCookie: Cookie("cookie-stale"),
-                    nowMs: 400,
-                })
-            )()
-        ).toBe(false);
-        expect(
-            db
-                .query(
-                    `SELECT lifecycle, cdb_state, run_token, run_target_version
-                     FROM _gw_registration_generations WHERE registration_id = ?`
-                )
-                .get(old.registrationId)
-        ).toEqual({ lifecycle: "retiring", cdb_state: "retiring", run_token: null, run_target_version: null });
-        expect(
-            db.query("SELECT registration_id FROM _gw_registration_heads WHERE principal_id = ?").get(old.principalId)
-        ).toEqual({ registration_id: replacement.registrationId });
     });
 
     test("lists and retires only exact current generations for one connection", () => {
@@ -598,8 +438,8 @@ describe("Gateway durable registration generations", () => {
         );
 
         expect(
-            db.transaction(() => beginInitialGatewayQuery(sql, { ...corruptHead, changeSeq: 1, nowMs: 200 }))()
-        ).toBeNull();
+            db.transaction(() => activateGatewaySubscription(sql, { ...corruptHead, changeSeq: 1, nowMs: 200 }))()
+        ).toBe(false);
         expect(listCurrentGatewayRegistrationsForConnection(sql, corruptHead.connectionId)).toEqual([]);
         expect(
             db.transaction(() => retireCurrentGatewayRegistration(sql, { ...corruptHead, nowMs: 300 }))()
@@ -613,8 +453,8 @@ describe("Gateway durable registration generations", () => {
             corruptGeneration.registrationId
         );
         expect(
-            db.transaction(() => beginInitialGatewayQuery(sql, { ...corruptGeneration, changeSeq: 1, nowMs: 200 }))()
-        ).toBeNull();
+            db.transaction(() => activateGatewaySubscription(sql, { ...corruptGeneration, changeSeq: 1, nowMs: 200 }))()
+        ).toBe(false);
     });
 
     test("retires active generations created before policy identity existed", () => {
