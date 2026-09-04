@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { build as viteBuild } from "vite";
+import { api } from "../src/server/index.ts";
 import { chardb } from "../src/vite/index.ts";
+import { manifestFromExports } from "../src/vite/manifest.ts";
 
 interface PluginShape {
     name: string;
@@ -41,6 +43,32 @@ function emittedCode(build: Awaited<ReturnType<typeof viteBuild>>): string {
 }
 
 describe("@chardb/core/vite", () => {
+    test("browser refs match untransformed Worker registration", async () => {
+        const source = `
+import { api } from "@chardb/core/server";
+export const save = api.mutation({ authority: "organization", partitionKey: "organizationId", handler: () => "saved" });
+export const list = api.query({ query: () => { throw new Error("must not execute at registration"); } });
+`;
+        const worker = new Function(
+            "api",
+            `${source.replace('import { api } from "@chardb/core/server";', "").replaceAll("export const", "const")};return { save, list };`
+        )(api);
+        const manifest = manifestFromExports(worker);
+        const output = makePlugin().transform.call(
+            { environment: { name: "client" } },
+            source,
+            "/different/build/root/api.ts",
+            { ssr: false }
+        );
+        if (!output) throw new Error("expected browser handles");
+        const browser = await import(`data:text/javascript;base64,${Buffer.from(output.code).toString("base64")}`);
+        expect(manifest.mutations.has(browser.save.__chardbRef)).toBe(true);
+        expect(manifest.queries.has(browser.list.__chardbRef)).toBe(true);
+        expect(browser.save.__chardbRef).toBe(worker.save.__chardbRef);
+        expect(browser.list.__chardbRef).toBe(worker.list.__chardbRef);
+        expect(output.code).not.toContain("must not execute");
+    });
+
     test("ignores removed helper APIs", () => {
         const p = makePlugin();
         const code = `
@@ -99,7 +127,7 @@ describe("@chardb/core/vite", () => {
         expect(new Set(refs).size).toBe(4);
     });
 
-    test("requires a stable ref for planned queries without evaluating their query callbacks", () => {
+    test("derives query refs without evaluating their callbacks", () => {
         const p = makePlugin();
         const code = `
       import { api } from "@chardb/core/server";
@@ -108,9 +136,7 @@ describe("@chardb/core/vite", () => {
         query: (db, args) => db.select({ id: posts.id }).from(posts).where(eq(posts.id, args.id)),
       });
     `;
-        expect(() => transform(p, code, "/abs/proj/src/routes/planned.ts")).toThrow(
-            "Query listPosts requires a literal ref"
-        );
+        expect(transform(p, code, "/abs/proj/src/routes/planned.ts").code).toContain("query#listPosts");
     });
 
     test("preserves explicit refs for method-form public queries", () => {
@@ -248,7 +274,7 @@ export const listPosts = api.query({
         }
     });
 
-    test("erases api mutation server dependencies from the final browser chunk and retains them in SSR", async () => {
+    test("preserves automatic refs in minified browser output and SSR", async () => {
         const fixture = await mkdtemp(path.join(tmpdir(), "chardb-mutation-vite-"));
         const entry = path.join(fixture, "mutations.ts");
         const schema = path.join(fixture, "schema.ts");
@@ -267,7 +293,6 @@ import { mutationTable } from "./schema.ts";
 
 const handlerSentinel = "MUTATION_HANDLER_SENTINEL";
 export const savePost = api.mutation({
-  ref: "api/posts#save-browser",
   args: { "~standard": { version: 1, vendor: "fixture", validate: value => ({ value }) } },
   handler: (ctx, args) => {
     ctx.db.insert(mutationTable).values({ ...args, handlerSentinel }).run();
@@ -282,13 +307,13 @@ export const savePost = api.mutation({
                 plugins: [chardb()],
                 build: {
                     write: false,
-                    minify: false,
+                    minify: true,
                     lib: { entry, formats: ["es"] },
                     rollupOptions: { external: ["@chardb/core/server"] },
                 },
             });
             const browserCode = emittedCode(browser);
-            expect(browserCode).toContain("api/posts#save-browser");
+            expect(browserCode).toContain("mutation#savePost");
             expect(browserCode).toContain("__chardbKind");
             expect(browserCode).toContain("__chardbRef");
             expect(browserCode).not.toContain("MUTATION_HANDLER_SENTINEL");
@@ -305,7 +330,7 @@ export const savePost = api.mutation({
             };
             expect(typeof browserModule.savePost).toBe("function");
             expect(browserModule.savePost.__chardbKind).toBe("mutation");
-            expect(browserModule.savePost.__chardbRef).toBe("api/posts#save-browser");
+            expect(browserModule.savePost.__chardbRef).toBe("mutation#savePost");
             expect(() => browserModule.savePost()).toThrow("cannot execute in the browser");
 
             const server = await viteBuild({
@@ -314,13 +339,13 @@ export const savePost = api.mutation({
                 plugins: [chardb()],
                 build: {
                     write: false,
-                    minify: false,
+                    minify: true,
                     ssr: entry,
                     rollupOptions: { external: ["@chardb/core/server"] },
                 },
             });
             const serverCode = emittedCode(server);
-            expect(serverCode).toContain("api/posts#save-browser");
+            expect(serverCode).toContain("mutation#savePost");
             expect(serverCode).toContain("MUTATION_HANDLER_SENTINEL");
             expect(serverCode).toContain("MUTATION_SCHEMA_IMPORT_SENTINEL");
             expect(serverCode).toContain("@chardb/core/server");
@@ -442,7 +467,7 @@ export const savePost = api.mutation((_ctx, args) => args, { ref: "api/posts#sav
         ).toThrow("must use one inline config object");
 
         const implicitRef = makePlugin();
-        expect(() =>
+        expect(
             implicitRef.transform.call(
                 { environment: { name: "client" } },
                 `
@@ -451,8 +476,8 @@ export const savePost = api.mutation({ handler: () => null });
 `,
                 "/abs/proj/src/routes/implicit-ref.ts",
                 { ssr: false }
-            )
-        ).toThrow("Mutation savePost requires a literal ref");
+            )?.code
+        ).toContain("mutation#savePost");
     });
 
     test("erases planned queries and api mutations together without changing either handle kind", async () => {
@@ -538,10 +563,11 @@ export const listPosts = api.query({
         expect(out.code).not.toContain("src/routes/posts.ts#createPost");
     });
 
-    test("rejects an organization mutation without a literal ref", () => {
+    test("derives organization mutation refs", () => {
         const p = makePlugin();
-        expect(() =>
-            p.transform(
+        expect(
+            transform(
+                p,
                 `
           import { api } from "@chardb/core/server";
           export const save = api.mutation({
@@ -551,14 +577,15 @@ export const listPosts = api.query({
           });
         `,
                 "/abs/proj/src/authority.ts"
-            )
-        ).toThrow("Mutation save requires a literal ref");
+            ).code
+        ).toContain("mutation#save");
     });
 
-    test("rejects a planned query without a literal ref", () => {
+    test("derives planned query refs", () => {
         const p = makePlugin();
-        expect(() =>
-            p.transform(
+        expect(
+            transform(
+                p,
                 `
           import { api } from "@chardb/core/server";
           export const list = api.query({
@@ -566,8 +593,8 @@ export const listPosts = api.query({
           });
         `,
                 "/abs/proj/src/authority-query.ts"
-            )
-        ).toThrow("Query list requires a literal ref");
+            ).code
+        ).toContain("query#list");
     });
 
     test("rejects duplicate and nonliteral explicit refs", () => {

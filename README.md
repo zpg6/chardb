@@ -68,7 +68,7 @@ Use `forOrgUser(auth)` when rows belong to a user inside an organization. Use `f
 
 ## Define the public API
 
-Queries and mutations are server definitions with stable wire identities. Arguments are validated before routing. No SQL string crosses RPC.
+Queries and mutations get wire identities from their API export names. Arguments are validated before routing. No SQL string crosses RPC. An explicit `ref` is optional when you need to preserve identity across a rename.
 
 ```ts
 // src/messages.ts
@@ -78,7 +78,6 @@ import { z } from "zod";
 import { messages } from "./schema.ts";
 
 export const listMessages = api.query({
-    ref: "messages#list",
     args: z.object({
         organizationId: z.string(),
         limit: z.number().int().min(1).max(100).default(50),
@@ -92,7 +91,6 @@ export const listMessages = api.query({
 });
 
 export const postMessage = api.mutation({
-    ref: "messages#create",
     authority: "organization",
     partitionKey: "organizationId",
     args: z.object({

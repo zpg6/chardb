@@ -2,6 +2,8 @@
 
 One organization-owned table covers typed create, edit, and delete mutations, live queries, and row permissions on one React screen. Better Auth signs in an anonymous local user. The configured CharDB client reads that session and adds the active organization to database calls.
 
+Query and mutation refs come from their API export names. Register them with `api: { ...api, ...queries }`; browser imports use the same identity. An explicit `ref` is only needed to preserve identity across a rename.
+
 The files follow the same split an application should use:
 
 ```text

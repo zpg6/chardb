@@ -1,3 +1,4 @@
+import { exportRef } from "../server/refs.ts";
 /**
  * Keep CharDB query and mutation handles safe to import from browser code.
  *
@@ -231,10 +232,7 @@ function collectExports(code: string, id: string): FoundExport[] {
             }
         }
         const refProperty = exactNamedProperty("ref");
-        if (!refProperty) {
-            const label = kind === "query" ? "Query" : "Mutation";
-            throw new Error(`[@chardb/core/vite] ${label} ${exportName} requires a literal ref`);
-        }
+        if (!refProperty) return exportRef(kind, exportName);
         if (!ts.isPropertyAssignment(refProperty) || !ts.isStringLiteralLike(refProperty.initializer)) {
             throw new Error(`[@chardb/core/vite] Explicit ref for ${exportName} must be a string literal`);
         }

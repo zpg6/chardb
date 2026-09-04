@@ -1,3 +1,4 @@
+import { bindExportRefs } from "./refs.ts";
 /**
  * Build the Worker entrypoint from one ownership mode, Better Auth setup,
  * domain schema, API handles, and migration journal.
@@ -111,6 +112,7 @@ export function chardb<
             : defineAuth((input.auth ?? {}) as unknown as AuthOptionsInput<TPlugins>);
 
     const refsValue = input.api;
+    if (refsValue) bindExportRefs(refsValue);
     const authBasePath = input.authBasePath ?? auth.options.basePath ?? "/api/auth";
     const jwtConfig = gatewayJwtConfigFromAuthOptions(auth.options, authBasePath);
     if (refsValue !== undefined && jwtConfig === null) {

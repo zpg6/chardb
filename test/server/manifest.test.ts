@@ -12,7 +12,7 @@ import {
     routeQuery,
     routeValidatedQuery,
 } from "../../src/server/manifest.ts";
-import type { ChardbRef } from "../../src/types.ts";
+import { ChardbRef } from "../../src/types.ts";
 import { globalScope } from "../helpers/cdb-table.ts";
 
 const { cdbTable } = globalScope();
@@ -44,6 +44,46 @@ describe("manifestFromExports", () => {
         expect(manifest.queries.size).toBe(1);
         expect(resolveMutation(manifest, createRow.__chardbRef).singlePartition).toBe(true);
         expect(resolveQuery(manifest, listRows.__chardbRef).compilePlan).toBeDefined();
+    });
+
+    test("binds unnamed handlers and queries to API export names", () => {
+        const first = api.mutation({
+            authority: "organization",
+            partitionKey: "organizationId",
+            args: z.object({ organizationId: z.string() }),
+            handler: () => "first",
+        });
+        const second = api.mutation({
+            authority: "organization",
+            partitionKey: "organizationId",
+            args: z.object({ organizationId: z.string() }),
+            handler: () => "second",
+        });
+        const list = api.query({
+            query: (db, args: { scope: string }) =>
+                db.select().from(rows).where(eq(rows.scope, args.scope)).orderBy(rows.id).limit(10),
+        });
+        const manifest = manifestFromExports({ first, second, list, alias: first });
+        expect([...manifest.mutations.keys()]).toEqual([ChardbRef("mutation#first"), ChardbRef("mutation#second")]);
+        expect([...manifest.queries.keys()]).toEqual([ChardbRef("query#list")]);
+        expect(first.__chardbRef).toBe(ChardbRef("mutation#first"));
+        expect(
+            resolveMutation(manifest, second.__chardbRef).invoke(
+                { db: {}, auth: { userId: "u", claims: {} } },
+                { organizationId: "org" }
+            )
+        ).toBe("second");
+        expect(
+            routeValidatedQuery(manifest, { ref: list.__chardbRef, args: { scope: "shared" } }, () => "policy")
+                .partitionKey
+        ).toBe("shared");
+        expect(() => manifestFromExports({ renamed: first })).toThrow("already registered as first");
+    });
+
+    test("rejects an explicit ref that collides with an automatic ref", () => {
+        const save = api.mutation({ handler: () => null });
+        const explicit = api.mutation({ ref: "mutation#save", handler: () => null });
+        expect(() => manifestFromExports({ save, explicit })).toThrow("duplicate ref");
     });
 
     test("routes a compiled plan and includes its plan hash", () => {

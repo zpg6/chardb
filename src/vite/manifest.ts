@@ -1,7 +1,7 @@
 import { CdbError } from "../errors.ts";
 import type { MutationAuthority } from "../server/define.ts";
 import type { ChardbManifest, MutationDescriptor, QueryDescriptor } from "../server/manifest.ts";
-import type { ChardbFunctionKind } from "../server/refs.ts";
+import { type ChardbFunctionKind, bindExportRefs } from "../server/refs.ts";
 import type { RegisteredQueryPlan } from "../server/registered-query-plan.ts";
 import type { Brand, ChardbRef, RawJson } from "../types.ts";
 
@@ -34,6 +34,7 @@ function isRefMarked(value: unknown): value is RefMarked {
 
 /** Build the runtime manifest from application API module namespaces. */
 export function manifestFromExports(exports: Record<string, unknown>): ChardbManifest {
+    bindExportRefs(exports);
     const mutations = new Map<ChardbRef, MutationDescriptor>();
     const queries = new Map<ChardbRef, QueryDescriptor>();
     const seenRefs = new Map<ChardbRef, { readonly kind: string; readonly value: unknown }>();

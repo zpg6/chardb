@@ -453,7 +453,7 @@ async function assertGeneratedBrowserBundle(directory) {
     const files = (await readdir(assetsDirectory)).filter(file => file.endsWith(".js"));
     if (files.length === 0) throw new Error("generated browser build emitted no JavaScript asset");
     const code = (await Promise.all(files.map(file => readFile(join(assetsDirectory, file), "utf8")))).join("\n");
-    for (const required of ["messages#create", "messages#list", "__chardbRef"]) {
+    for (const required of ["mutation#postMessage", "query#listMessages", "__chardbRef"]) {
         if (!code.includes(required)) throw new Error(`generated browser bundle is missing ${required}`);
     }
     for (const forbidden of [
@@ -1311,7 +1311,7 @@ async function proveLiveQuery(cwd, origin, token, organizationId, existingIds, n
         await new Promise((resolve, reject) => {
             const timeout = setTimeout(() => reject(new Error("generated live query timed out")), 15_000);
             let wrote = false;
-            const subscription = db.subscribe("messages#list", { organizationId }, (rows, state) => {
+            const subscription = db.subscribe("query#listMessages", { organizationId }, (rows, state) => {
                 if (state !== "live") return;
                 const ids = rows.map(row => row.id).sort();
                 const before = [...existingIds].sort();

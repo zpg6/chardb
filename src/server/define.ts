@@ -104,18 +104,15 @@ export type MutationOptions<TArgs = unknown> =
     | (MutationOptionsBase<TArgs> & {
           /** Opens dispatch only after Catalog confirms membership in the extracted organization partition. */
           readonly authority: "organization";
-          readonly ref: string;
       })
     | (MutationOptionsBase<TArgs> & {
           /** Opens dispatch only when the extracted partition is the verified JWT subject. */
           readonly authority: "user";
-          readonly ref: string;
           readonly partitionKey: (args: TArgs) => string | number | bigint | undefined;
       })
     | (MutationOptionsBase<TArgs> & {
           /** Places the mutation in an explicit application-wide partition. */
           readonly authority: "global";
-          readonly ref: string;
           readonly partitionKey: (args: TArgs) => string | number | bigint | undefined;
       })
     | (MutationOptionsBase<TArgs> & { readonly authority?: undefined });
@@ -172,18 +169,15 @@ export type MutationConfig<TDb, TArgs extends Record<string, unknown>, TResult> 
     | (MutationConfigBase<TDb, TArgs, TResult> & {
           /** Opens dispatch only after Catalog confirms membership in the extracted organization partition. */
           readonly authority: "organization";
-          readonly ref: string;
       })
     | (MutationConfigBase<TDb, TArgs, TResult> & {
           /** The extracted partition must equal the verified JWT subject. */
           readonly authority: "user";
-          readonly ref: string;
           readonly partitionKey: PartitionKeyOf<TArgs> | ((args: TArgs) => string | number | bigint | undefined);
       })
     | (MutationConfigBase<TDb, TArgs, TResult> & {
           /** Places the mutation in an explicit application-wide partition. */
           readonly authority: "global";
-          readonly ref: string;
           readonly partitionKey: PartitionKeyOf<TArgs> | ((args: TArgs) => string | number | bigint | undefined);
       })
     | (MutationConfigBase<TDb, TArgs, TResult> & { readonly authority?: undefined });
@@ -232,9 +226,6 @@ export function defineMutation<TDb, TArgs extends Record<string, unknown>, TResu
         throw new TypeError("chardb: mutation ref must be a nonempty string containing #");
     }
     const authority = isConfig ? configOrHandler.authority : optionsArg?.authority;
-    if (authority !== undefined && explicitRef === undefined) {
-        throw new TypeError(`chardb: ${authority} mutations require an explicit ref`);
-    }
     const partitionKey = isConfig ? configOrHandler.partitionKey : optionsArg?.partitionKey;
     const partitionKeyFn: ((args: TArgs) => string | number | bigint | undefined) | undefined =
         typeof partitionKey === "string"
@@ -335,8 +326,8 @@ function runValidatorSync<T>(schema: StandardSchemaV1<unknown, T>, value: unknow
 }
 
 export interface PlannedQueryConfig<TDb, TArgs extends Record<string, unknown>, TBuilder extends PlannedQueryBuilder> {
-    /** Stable across Wrangler, Vite, browser, Gateway, and Cdb builds. */
-    readonly ref: string;
+    /** Optional stable identity override, otherwise derived from the API export name. */
+    readonly ref?: string;
     readonly args?: StandardSchemaV1<unknown, TArgs>;
     /** Pure synchronous builder. CharDB compiles it before Catalog and executes it inside Cdb. */
     readonly query: (db: TDb, args: TArgs) => TBuilder;
@@ -368,7 +359,10 @@ export function defineQuery<TDb, TArgs extends Record<string, unknown>, TResult>
     if (mixed.length > 0) {
         throw new TypeError(`chardb: planned query cannot mix query with ${mixed.join(", ")}`);
     }
-    if (typeof explicitRef !== "string" || explicitRef.length === 0 || !explicitRef.includes("#")) {
+    if (
+        explicitRef !== undefined &&
+        (typeof explicitRef !== "string" || explicitRef.length === 0 || !explicitRef.includes("#"))
+    ) {
         throw new TypeError("chardb: query ref must be a nonempty string containing #");
     }
     const fn = (async (_ctx: QueryCtx<TDb>, _args: TArgs) => {
@@ -377,7 +371,7 @@ export function defineQuery<TDb, TArgs extends Record<string, unknown>, TResult>
             message: "planned query handles are dispatch-only; Cdb executes their compiled plan",
         });
     }) as unknown as QueryFn<TDb, TArgs, TResult>;
-    Object.defineProperty(fn, "__chardbExplicitRef", { value: true, enumerable: false });
+    if (explicitRef) Object.defineProperty(fn, "__chardbExplicitRef", { value: true, enumerable: false });
     Object.defineProperty(fn, "__chardbCompilePlan", {
         value: (args: TArgs) =>
             compileRegisteredQueryPlan(plannedQuery as unknown as (db: unknown, args: TArgs) => unknown, args),

@@ -30,6 +30,7 @@ import { chardb } from "../../src/server/chardb.ts";
 import { createApi, defineMutation } from "../../src/server/define.ts";
 import { Cdb } from "../../src/server/do/cdb.ts";
 import { Gateway } from "../../src/server/do/gateway.ts";
+import { api as publicApi } from "../../src/server/index.ts";
 import { defineMigrations } from "../../src/server/schema-migrations.ts";
 import type { RawJson } from "../../src/types.ts";
 import { vshardOf } from "../../src/vshard.ts";
@@ -117,6 +118,16 @@ const queryWithNonJsonTransform = itemApi.query({
 });
 
 describe("chardb({…})", () => {
+    test("binds automatic refs before direct Worker routes use the handles", () => {
+        const save = publicApi.mutation({
+            authority: "organization",
+            partitionKey: (args: RoutedArgs) => args.organizationId,
+            handler: () => null,
+        });
+        chardb({ ownership: "organization", auth, schema: { items }, api: { save } });
+        expect(String(save.__chardbRef)).toBe("mutation#save");
+    });
+
     test("rejects missing and unknown ownership modes at construction", () => {
         const callFromJavaScript = chardb as unknown as (input: Record<string, unknown>) => unknown;
         for (const ownership of [undefined, "global", null]) {

@@ -5,7 +5,6 @@ import { z } from "zod";
 import { messages } from "./schema.ts";
 
 export const postMessage = api.mutation({
-    ref: "src/server/api.ts#postMessage",
     authority: "organization",
     args: z.object({
         id: z.string(),
@@ -29,7 +28,6 @@ export const postMessage = api.mutation({
 const messageKey = z.object({ organizationId: z.string(), id: z.string().min(1) });
 
 export const editMessage = api.mutation({
-    ref: "src/server/api.ts#editMessage",
     authority: "organization",
     partitionKey: "organizationId",
     args: messageKey.extend({ body: z.string().trim().min(1).max(2_000) }),
@@ -40,7 +38,6 @@ export const editMessage = api.mutation({
 });
 
 export const deleteMessage = api.mutation({
-    ref: "src/server/api.ts#deleteMessage",
     authority: "organization",
     partitionKey: "organizationId",
     args: messageKey,
