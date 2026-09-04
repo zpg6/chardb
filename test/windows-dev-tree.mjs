@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
+import { descendantProcesses } from "./helpers/process-tree.ts";
 import { isOccupiedPortFailure } from "./helpers/windows-port-collision.ts";
 
 if (process.platform !== "win32") throw new Error("windows-dev-tree.mjs must run on Windows");
@@ -352,6 +353,7 @@ async function processSnapshot() {
             pid: Number(row.ProcessId),
             parentPid: Number(row.ParentProcessId),
             createdAt: typeof row.CreationDate === "string" ? row.CreationDate : "",
+            createdAtMs: creationDateMs(row.CreationDate),
             commandLine: typeof row.CommandLine === "string" ? row.CommandLine : "",
         }))
         .filter(
@@ -359,28 +361,15 @@ async function processSnapshot() {
                 Number.isSafeInteger(row.pid) &&
                 row.pid > 0 &&
                 Number.isSafeInteger(row.parentPid) &&
-                row.createdAt.length > 0
+                Number.isFinite(row.createdAtMs)
         );
 }
 
-function descendantProcesses(snapshot, rootPid) {
-    const children = new Map();
-    for (const row of snapshot) {
-        const entries = children.get(row.parentPid) ?? [];
-        entries.push(row);
-        children.set(row.parentPid, entries);
-    }
-    const result = [];
-    const pending = [...(children.get(rootPid) ?? [])];
-    const seen = new Set([rootPid]);
-    while (pending.length > 0) {
-        const process = pending.pop();
-        if (seen.has(process.pid)) continue;
-        seen.add(process.pid);
-        result.push(process);
-        pending.push(...(children.get(process.pid) ?? []));
-    }
-    return result;
+// Windows PowerShell serializes DateTime as "/Date(<ms>)/"; pwsh emits ISO 8601.
+function creationDateMs(value) {
+    if (typeof value !== "string") return Number.NaN;
+    const epoch = /^\/Date\((\d+)\)\/$/.exec(value);
+    return epoch ? Number(epoch[1]) : Date.parse(value);
 }
 
 async function waitForProcessesToExit(processes, timeoutMs) {
