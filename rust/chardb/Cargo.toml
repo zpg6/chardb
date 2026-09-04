@@ -16,10 +16,13 @@ client = ["dep:base64", "dep:flume", "dep:http", "dep:rustls", "dep:tungstenite"
 sync = ["client"]
 async = ["client", "flume/async"]
 introspection = ["dep:schemars"]
+browser-login = ["dep:oauth2", "dep:webbrowser", "dep:httparse"]
 rustls-webpki-roots = ["client", "tungstenite/rustls-tls-webpki-roots"]
 rustls-native-roots = ["client", "tungstenite/rustls-tls-native-roots"]
 
 [dependencies]
+httparse = { version = "1", optional = true }
+oauth2 = { version = "5", default-features = false, features = ["timing-resistant-secret-traits"], optional = true }
 base64 = { version = "0.22", optional = true }
 flume = { version = "0.12", default-features = false, optional = true }
 http = { version = "1", optional = true }
@@ -29,13 +32,19 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 schemars = { version = "1.2", optional = true }
 tungstenite = { version = "0.29", default-features = false, features = ["handshake"], optional = true }
 uuid = { version = "1.23", features = ["v7"], optional = true }
+webbrowser = { version = "1", optional = true }
 
 [dev-dependencies]
+oauth2 = { version = "5", default-features = false, features = ["ureq"] }
 futures-lite = "2"
 
 [[example]]
 name = "workerd_conformance"
 required-features = ["sync"]
+
+[[example]]
+name = "browser_login"
+required-features = ["browser-login", "sync"]
 
 [lints.rust]
 unsafe_code = "forbid"

@@ -22,3 +22,6 @@ pub use client::{Client, Subscription};
 
 #[cfg(feature = "async")]
 pub use client::{AsyncClient, AsyncSubscription};
+
+#[cfg(feature = "browser-login")]
+pub mod browser_login;
