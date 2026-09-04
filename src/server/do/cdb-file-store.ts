@@ -470,40 +470,6 @@ export class CdbFileStore {
         return this.require(existing.fileId);
     }
 
-    /** Caller must run this with the owning row update in the same SQLite transaction. */
-    replaceInTransaction(input: {
-        readonly nextFileId: string;
-        readonly previousFileId: string | null;
-        readonly organizationId: string;
-        readonly table: string;
-        readonly column: string;
-        readonly rowId: string;
-        readonly nowMs: number;
-    }): { readonly attached: StoredFile; readonly queued: StoredFile | null } {
-        const attached = this.attach(
-            input.nextFileId,
-            input.organizationId,
-            input.table,
-            input.column,
-            input.rowId,
-            input.nowMs
-        );
-        if (input.previousFileId === null || input.previousFileId === input.nextFileId) {
-            return { attached, queued: null };
-        }
-        const previous = this.require(FileId(input.previousFileId));
-        if (
-            previous.organizationId !== input.organizationId ||
-            previous.table !== input.table ||
-            previous.column !== input.column ||
-            previous.rowId !== input.rowId ||
-            previous.status !== "attached"
-        ) {
-            invalid("replacement source does not match the owning row and column");
-        }
-        return { attached, queued: this.queueDelete(previous.fileId, input.nowMs) };
-    }
-
     queueDelete(fileId: string, nowMs: number): StoredFile {
         const existing = this.require(FileId(fileId));
         safeTime(nowMs);
@@ -516,36 +482,6 @@ export class CdbFileStore {
         if (this.sql.changes() !== 1)
             throw new CdbError({ code: "CDB_INVARIANT", message: "file delete transition lost" });
         return this.require(existing.fileId);
-    }
-
-    expirePending(cutoffMs: number, nowMs: number): number {
-        safeTime(cutoffMs);
-        safeTime(nowMs);
-        this.sql.exec(
-            `UPDATE _chardb_files SET status = 'deleting', updated_at = MAX(updated_at, ?)
-             WHERE status = 'pending' AND created_at <= ?`,
-            nowMs,
-            cutoffMs
-        );
-        return this.sql.changes();
-    }
-
-    expireUnattached(cutoffMs: number, nowMs: number): number {
-        safeTime(cutoffMs);
-        safeTime(nowMs);
-        this.sql.exec(
-            `UPDATE _chardb_files SET status = 'deleting', updated_at = MAX(updated_at, ?)
-             WHERE file_id IN (
-               SELECT file_id FROM _chardb_files
-               WHERE status IN ('pending', 'ready') AND updated_at <= ?
-               ORDER BY updated_at, file_id
-               LIMIT ?
-             )`,
-            nowMs,
-            cutoffMs,
-            CDB_FILE_DELETE_BATCH_SIZE
-        );
-        return this.sql.changes();
     }
 
     nextUnattachedExpiryAt(ttlMs: number, options: CdbFileMaintenanceOptions = {}): number | null {
@@ -645,28 +581,6 @@ export class CdbFileStore {
              )`,
             nowMs,
             organizationId,
-            limit
-        );
-        return this.sql.changes();
-    }
-
-    queueTombstonedFiles(nowMs: number, limit: number = CDB_FILE_DELETE_BATCH_SIZE): number {
-        safeTime(nowMs);
-        if (!Number.isSafeInteger(limit) || limit < 1 || limit > CDB_FILE_DELETE_BATCH_SIZE) {
-            invalid(`delete batch must be from 1 through ${CDB_FILE_DELETE_BATCH_SIZE}`);
-        }
-        this.sql.exec(
-            `UPDATE _chardb_files
-             SET status = 'deleting', updated_at = MAX(updated_at, ?)
-             WHERE file_id IN (
-               SELECT files.file_id FROM _chardb_files AS files
-               INNER JOIN _chardb_deleted_organizations AS deleted
-                 ON deleted.organization_id = files.organization_id
-               WHERE files.status IN ('ready', 'attached')
-               ORDER BY files.updated_at, files.file_id
-               LIMIT ?
-             )`,
-            nowMs,
             limit
         );
         return this.sql.changes();

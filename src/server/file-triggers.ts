@@ -37,7 +37,25 @@ export function renderFileAttachmentTriggerSet(resource: ChardbFileResourceDescr
           )
       ) THEN RAISE(ABORT, 'CDB_FILE_INVALID_ATTACHMENT') END`;
 
+    const validRowId = `
+      SELECT CASE WHEN NEW.${column} IS NOT NULL AND (NEW.${primaryKey} IS NULL
+        OR length(CAST(CAST(NEW.${primaryKey} AS TEXT) AS BLOB)) NOT BETWEEN 1 AND 256)
+        THEN RAISE(ABORT, 'CDB_FILE_INVALID_ATTACHMENT') END`;
     const install = Object.freeze([
+        `CREATE TRIGGER IF NOT EXISTS ${identifier(`${prefix}_bli`)}
+         BEFORE INSERT ON ${table}
+         WHEN NEW.${column} IS NOT NULL
+         BEGIN${validRowId};
+         END`,
+        `CREATE TRIGGER IF NOT EXISTS ${identifier(`${prefix}_blu`)}
+         BEFORE UPDATE OF ${primaryKey}, ${organizationColumn}, ${column} ON ${table}
+         WHEN OLD.${column} IS NOT NULL OR NEW.${column} IS NOT NULL
+         BEGIN
+           SELECT CASE WHEN NEW.${primaryKey} IS NOT OLD.${primaryKey}
+             OR NEW.${organizationColumn} IS NOT OLD.${organizationColumn}
+             THEN RAISE(ABORT, 'CDB_FILE_INVALID_ATTACHMENT') END;
+           ${validRowId};
+         END`,
         `CREATE TRIGGER IF NOT EXISTS ${identifier(`${prefix}_bi`)}
          BEFORE INSERT ON ${table}
          WHEN NEW.${column} IS NOT NULL
@@ -87,7 +105,15 @@ export function renderFileAttachmentTriggerSet(resource: ChardbFileResourceDescr
              AND status = 'attached';
          END`,
     ]);
-    const names = Object.freeze([`${prefix}_bi`, `${prefix}_ai`, `${prefix}_bu`, `${prefix}_au`, `${prefix}_ad`]);
+    const names = Object.freeze([
+        `${prefix}_bli`,
+        `${prefix}_blu`,
+        `${prefix}_bi`,
+        `${prefix}_ai`,
+        `${prefix}_bu`,
+        `${prefix}_au`,
+        `${prefix}_ad`,
+    ]);
     return Object.freeze({
         names,
         install,
