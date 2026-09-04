@@ -62,10 +62,6 @@ export interface VshardRange {
     readonly shardId: ShardId;
 }
 
-function rangeOverlaps(a: VshardRange, b: VshardRange): boolean {
-    return a.lo <= b.hi && b.lo <= a.hi;
-}
-
 /**
  * The (vshard_lo, vshard_hi) → ShardDO map. Ranges only split, never merge —
  * a shard rebalance is always a `split(lo, hi, newShard)` carving a sub-range
@@ -82,7 +78,7 @@ export class VshardMap {
     }
 
     private insertSorted(r: VshardRange): void {
-        if (r.lo < 0 || r.hi >= VSHARD_COUNT || r.lo > r.hi) {
+        if (!Number.isInteger(r.lo) || !Number.isInteger(r.hi) || r.lo < 0 || r.hi >= VSHARD_COUNT || r.lo > r.hi) {
             throw new RangeError(`bad vshard range [${r.lo}, ${r.hi}]`);
         }
         let i = 0;
@@ -91,7 +87,7 @@ export class VshardMap {
     }
 
     private assertContiguous(): void {
-        if (this.ranges.length === 0) return;
+        if (this.ranges.length === 0) throw new RangeError("vshard map is empty");
         if ((this.ranges[0] as VshardRange).lo !== 0) {
             throw new RangeError("vshard map does not start at 0");
         }
@@ -109,7 +105,7 @@ export class VshardMap {
     }
 
     routeVshard(v: Vshard): ShardId {
-        if (v < 0 || v >= VSHARD_COUNT) throw new RangeError(`vshard ${v} out of range`);
+        if (!Number.isInteger(v) || v < 0 || v >= VSHARD_COUNT) throw new RangeError(`vshard ${v} out of range`);
         let lo = 0;
         let hi = this.ranges.length - 1;
         while (lo <= hi) {
@@ -120,10 +116,6 @@ export class VshardMap {
             else return r.shardId;
         }
         throw new RangeError(`vshard ${v} not routable (corrupt map)`);
-    }
-
-    routeKey(cols: readonly (string | number | bigint | Uint8Array)[]): ShardId {
-        return this.routeVshard(vshardOf(cols));
     }
 
     /**
@@ -151,23 +143,5 @@ export class VshardMap {
 
     ranges_(): readonly VshardRange[] {
         return this.ranges;
-    }
-
-    /**
-     * Resolve which shards own the (possibly multi-vshard) intent. Used by the
-     * scatter-gather planner.
-     */
-    shardsFor(vshards: readonly Vshard[]): ShardId[] {
-        const seen = new Set<ShardId>();
-        for (const v of vshards) seen.add(this.routeVshard(v));
-        return [...seen];
-    }
-
-    /** Return every shard that owns ≥1 vshard inside [lo, hi]. */
-    shardsInRange(lo: number, hi: number): ShardId[] {
-        const out = new Set<ShardId>();
-        const probe: VshardRange = { lo, hi, shardId: ShardId("__probe__") };
-        for (const r of this.ranges) if (rangeOverlaps(r, probe)) out.add(r.shardId);
-        return [...out];
     }
 }

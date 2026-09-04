@@ -447,6 +447,12 @@ export class CdbReshardRuntime {
                 });
             }
             for (const table of args.tables) {
+                if (sql.one(`SELECT 1 FROM ${quoteIdent(table.name)} WHERE rowid <= 0 LIMIT 1`)) {
+                    throw new CdbError({
+                        code: "CDB_INVALID_ARGS",
+                        message: `reshard source table ${table.name} has nonpositive rowids`,
+                    });
+                }
                 const watermark = sql.one<{ max_rowid: number }>(
                     `SELECT COALESCE(MAX(rowid), 0) AS max_rowid FROM ${quoteIdent(table.name)}`
                 );
@@ -1482,8 +1488,7 @@ export class CdbReshardRuntime {
                 if (!table) {
                     throw new CdbError({ code: "CDB_INVARIANT", message: "known domain tail table is missing" });
                 }
-                const pk = parseScalarPk(e.pk);
-                if (!isPkInRange(pk, args.range)) continue;
+                if (!inRange(e.pk, args.range)) continue;
                 if (e.op === "del") {
                     const before = parseJsonColumn("before", e.before);
                     if (!before) {
@@ -1649,7 +1654,7 @@ export class CdbReshardRuntime {
             );
             const candidates: number[] = [];
             for (const r of rows) {
-                if (isPkInRange(r.pk, args.range)) candidates.push(r.rowid);
+                if (inRange(r.pk, args.range)) candidates.push(r.rowid);
             }
             for (const rid of candidates) {
                 sql.exec(`DELETE FROM ${ident} WHERE rowid = ?`, rid);
@@ -1917,7 +1922,7 @@ export class CdbReshardRuntime {
                     args.batchSize
                 );
                 for (const row of rows) {
-                    if (!isPkInRange(row.pk, { lo: args.rangeLo, hi: args.rangeHi })) continue;
+                    if (!inRange(row.pk, { lo: args.rangeLo, hi: args.rangeHi })) continue;
                     sql.exec(`DELETE FROM ${ident} WHERE rowid = ?`, row.rowid);
                     deleted++;
                 }
@@ -2215,14 +2220,4 @@ const ALLOWED_IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
 function quoteIdent(raw: string): string {
     if (!ALLOWED_IDENT.test(raw)) throw new Error(`reshard: refusing identifier: ${raw}`);
     return `"${raw}"`;
-}
-
-function parseScalarPk(s: string): string | number {
-    const n = Number(s);
-    if (s !== "" && Number.isFinite(n) && String(n) === s) return n;
-    return s;
-}
-
-function isPkInRange(value: unknown, range: RangeFilter): boolean {
-    return inRange(value, range);
 }

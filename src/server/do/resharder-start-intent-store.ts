@@ -172,7 +172,8 @@ export class ResharderStartIntentStore {
             this.assertCapacity();
             this.sql.exec(
                 `INSERT INTO migration_start_intent
-                 (mig_id, state, created_at, updated_at) VALUES (?, 'abort_requested', ?, ?)`,
+                 (mig_id, state, recovery_generation, created_at, updated_at)
+                 VALUES (?, 'abort_requested', NULL, ?, ?)`,
                 migId,
                 nowMs,
                 nowMs

@@ -4,6 +4,11 @@ import { OP_LOG_DDL, SPLIT_LOG_ACCOUNTED_BYTES_SQL, SPLIT_LOG_DDL } from "../../
 import type { SyncSql } from "../../src/oplog/wrapper.ts";
 import { CdbVectorOutboxStore, initializeCdbVectorOutboxStore } from "../../src/server/do/cdb-vector-outbox-store.ts";
 import {
+    type CdbVectorSystemTailEntry,
+    applyCdbVectorTailEntry,
+    initializeCdbVectorReshardTailStore,
+} from "../../src/server/do/cdb-vector-reshard-tail.ts";
+import {
     beginExternalReshardCapture,
     endExternalReshardCapture,
     initializeExternalReshardCapture,
@@ -104,6 +109,51 @@ describe("vector reshard capture triggers", () => {
             .query("SELECT source_tx_id, op, table_name, pk, before, after FROM _chardb_split_log ORDER BY lsn")
             .all() as TailRow[];
     }
+
+    test("replays staged upserts and deletes when the source clock moves backwards", () => {
+        install();
+        for (const nowMs of [30, 20, 10]) {
+            db.transaction(() => {
+                const mutId = `clock-${nowMs}`;
+                pendingMutation(placement, mutId);
+                if (nowMs === 10) store.stageDelete({ vectorId: "vec-moving", organizationId, nowMs });
+                else stage("vec-moving", nowMs);
+                finishMutation(mutId);
+            })();
+        }
+
+        const entries = db
+            .query("SELECT lsn, table_name, op, pk, before, after FROM _chardb_split_log ORDER BY lsn")
+            .all() as CdbVectorSystemTailEntry[];
+        expect(
+            entries
+                .filter(entry => entry.table_name === "_chardb_vectors")
+                .map(entry => JSON.parse(entry.after as string).updated_at)
+        ).toEqual([30, 20, 10]);
+        const destination = new Database(":memory:");
+        try {
+            const destinationSql = syncSql(destination);
+            initializeCdbVectorOutboxStore(destinationSql);
+            initializeCdbVectorReshardTailStore(destinationSql);
+            for (const entry of entries) {
+                destination.transaction(() => {
+                    expect(
+                        applyCdbVectorTailEntry(destinationSql, "vector-move", entry, {
+                            lo: placement,
+                            hi: placement,
+                        })
+                    ).toBe(true);
+                })();
+            }
+            for (const table of ["_chardb_vectors", "_chardb_vector_outbox"]) {
+                expect(destination.query(`SELECT * FROM ${table}`).all()).toEqual(
+                    db.query(`SELECT * FROM ${table}`).all()
+                );
+            }
+        } finally {
+            destination.close();
+        }
+    });
 
     test("captures registered vector writes with exact scalar images and lowercase BLOB hex", () => {
         install();

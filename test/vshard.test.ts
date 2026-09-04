@@ -3,13 +3,10 @@ import { ShardId, type Vshard } from "../src/types.ts";
 import { VSHARD_COUNT, VshardMap, canonicalConcat, vshardOf } from "../src/vshard.ts";
 
 describe("vshard router", () => {
-    test("vshardOf is deterministic and inside the namespace", () => {
-        for (const k of ["org-1", "org-2", "0", "user:abc"]) {
-            const v = vshardOf([k]);
-            expect(v).toBeGreaterThanOrEqual(0);
-            expect(v).toBeLessThan(VSHARD_COUNT);
-            expect(vshardOf([k])).toBe(v);
-        }
+    test("routing matches published xxhash64 seed-zero vectors", () => {
+        expect(Number(vshardOf([]))).toBe(Number(0xef46db3751d8e999n % 16384n));
+        expect(Number(vshardOf(["a"]))).toBe(Number(0xd24ec4f1a98c6e5bn % 16384n));
+        expect(Number(vshardOf(["asdf"]))).toBe(Number(0x415872f599cea71en % 16384n));
     });
 
     test("composite key encoding differs from concatenated single-string key", () => {
@@ -21,11 +18,12 @@ describe("vshard router", () => {
     test("canonicalConcat inserts a sep between cols", () => {
         const a = canonicalConcat(["a", "b"]);
         const b = canonicalConcat(["ab"]);
-        expect(a.length).toBe(b.length + 1);
+        expect([...a]).toEqual([97, 31, 98]);
+        expect([...b]).toEqual([97, 98]);
     });
 
     test("composite keys with unicode encode UTF-8 deterministically", () => {
-        expect(vshardOf(["café", "🚀"])).toBe(vshardOf(["café", "🚀"]));
+        expect([...canonicalConcat(["café", "🚀"])]).toEqual([99, 97, 102, 195, 169, 31, 240, 159, 154, 128]);
         // ASCII-only spelling differs from unicode spelling.
         expect(vshardOf(["cafe"])).not.toBe(vshardOf(["café"]));
     });
@@ -38,7 +36,7 @@ describe("vshard router", () => {
 
     test("composite keys with Uint8Array travel through canonicalConcat untouched", () => {
         const bytes = new Uint8Array([1, 2, 3, 4, 5]);
-        expect(vshardOf([bytes])).toBe(vshardOf([new Uint8Array([1, 2, 3, 4, 5])]));
+        expect(canonicalConcat([bytes])).toEqual(bytes);
         // Different bytes → different vshard (probabilistically; deterministic for these inputs).
         expect(vshardOf([new Uint8Array([1, 2, 3])])).not.toBe(vshardOf([new Uint8Array([3, 2, 1])]));
     });
@@ -53,16 +51,33 @@ describe("vshard router", () => {
         expect(() => vshardOf([null as unknown as string])).toThrow(/unsupported partition key scalar/);
         expect(() => vshardOf([{} as unknown as string])).toThrow(/unsupported partition key scalar/);
     });
-
-    test("empty composite key produces a stable vshard (the empty-bytes hash)", () => {
-        const v = vshardOf([]);
-        expect(v).toBeGreaterThanOrEqual(0);
-        expect(v).toBeLessThan(VSHARD_COUNT);
-        expect(vshardOf([])).toBe(v);
-    });
 });
 
 describe("VshardMap", () => {
+    test("rejects routing values outside the integer namespace", () => {
+        const map = new VshardMap();
+        for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1, 0.5, VSHARD_COUNT]) {
+            expect(() => map.routeVshard(value as Vshard)).toThrow(RangeError);
+        }
+    });
+
+    test("rejects empty and fractional range maps", () => {
+        expect(() => new VshardMap([])).toThrow(RangeError);
+        expect(
+            () =>
+                new VshardMap([
+                    { lo: 0, hi: 0.5, shardId: ShardId("a") },
+                    { lo: 1.5, hi: VSHARD_COUNT - 1, shardId: ShardId("b") },
+                ])
+        ).toThrow(RangeError);
+    });
+
+    test("rejects fractional splits without changing ownership", () => {
+        const map = new VshardMap();
+        expect(() => map.split(0.5, 10.5, ShardId("new"))).toThrow(RangeError);
+        expect(map.ranges_()).toEqual([{ lo: 0, hi: VSHARD_COUNT - 1, shardId: ShardId("ShardDO_0") }]);
+    });
+
     test("default map covers full namespace, single shard", () => {
         const m = new VshardMap();
         expect(m.routeVshard(0 as Vshard)).toBe(ShardId("ShardDO_0"));
@@ -96,16 +111,5 @@ describe("VshardMap", () => {
     test("split that crosses range boundaries throws", () => {
         const m = new VshardMap().split(0, 8191, ShardId("ShardDO_1"));
         expect(() => m.split(4096, 12000, ShardId("ShardDO_2"))).toThrow();
-    });
-
-    test("shardsInRange returns every shard owning ≥1 vshard inside [lo, hi]", () => {
-        const m = new VshardMap().split(0, 8191, ShardId("ShardDO_1")).split(8192, 12287, ShardId("ShardDO_2"));
-        const owners = m.shardsInRange(4000, 9000).sort();
-        expect(owners).toEqual(["ShardDO_1", "ShardDO_2"].map(ShardId).sort());
-    });
-
-    test("vshard out of range throws", () => {
-        const m = new VshardMap();
-        expect(() => m.routeVshard(VSHARD_COUNT as Vshard)).toThrow();
     });
 });

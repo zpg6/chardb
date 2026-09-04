@@ -86,6 +86,106 @@ describe("Cdb file reshard ownership store", () => {
         ]);
     }
 
+    test("refreshes tombstone snapshot retries only when the watermark and purge counter advance", () => {
+        destination.reshard.beginDest(IDENTITY, 1);
+        const original = {
+            organizationId: "org-snapshot-retry",
+            deletedAt: 1,
+            placementVshard: Number(vshardOf(["org-snapshot-retry"])),
+            vectorUnprovenTurns: 0,
+        };
+        const advanced = { ...original, vectorUnprovenTurns: 2 };
+        destination.reshard.applyTombstones(IDENTITY, [original], 1);
+        expect(() => destination.reshard.applyTombstones(IDENTITY, [advanced], 1)).toThrow();
+        expect(destination.reshard.applyTombstones(IDENTITY, [advanced], 3)).toEqual({ applied: 1, inserted: 0 });
+        expect(destination.reshard.applyTombstones(IDENTITY, [advanced], 3)).toEqual({ applied: 1, inserted: 0 });
+        expect(() => destination.reshard.applyTombstones(IDENTITY, [original], 1)).toThrow(/watermark regressed/);
+        expect(() => destination.reshard.applyTombstones(IDENTITY, [original], 4)).toThrow();
+        expect(() => destination.reshard.applyTombstones(IDENTITY, [{ ...advanced, deletedAt: 2 }], 4)).toThrow();
+        expect(
+            destination.sql.one<{ vector_unproven_turns: number }>(
+                "SELECT vector_unproven_turns FROM _chardb_deleted_organizations"
+            )
+        ).toEqual({
+            vector_unproven_turns: 2,
+        });
+    });
+
+    test("replays tombstone history covered by a newer snapshot without regressing purge progress", () => {
+        destination.reshard.beginDest(IDENTITY, 1);
+        const organizationId = "org-covered-tombstone";
+        const placement = Number(vshardOf([organizationId]));
+        destination.reshard.applyTombstones(
+            IDENTITY,
+            [
+                {
+                    organizationId,
+                    deletedAt: 1,
+                    placementVshard: placement,
+                    vectorUnprovenTurns: 2,
+                },
+            ],
+            3
+        );
+        const image = (turns: number) =>
+            JSON.stringify({
+                organization_id: organizationId,
+                deleted_at: 1,
+                placement_vshard: placement,
+                vector_unproven_turns: turns,
+            }) as never;
+        const range = { lo: placement, hi: placement };
+        for (let lsn = 1; lsn <= 4; lsn++) {
+            expect(
+                applyReshardSystemTailEntry(
+                    destination.sql,
+                    IDENTITY.migId,
+                    {
+                        lsn,
+                        op: lsn === 1 ? "ins" : "upd",
+                        table_name: "_chardb_deleted_organizations",
+                        pk: organizationId,
+                        before: lsn === 1 ? null : image(lsn - 2),
+                        after: image(lsn - 1),
+                    },
+                    range
+                )
+            ).toBe(true);
+            expect(
+                destination.sql.one<{ vector_unproven_turns: number }>(
+                    "SELECT vector_unproven_turns FROM _chardb_deleted_organizations"
+                )
+            ).toEqual({
+                vector_unproven_turns: Math.max(2, lsn - 1),
+            });
+        }
+        for (const after of [
+            image(4),
+            JSON.stringify({
+                organization_id: organizationId,
+                deleted_at: 2,
+                placement_vshard: placement,
+                vector_unproven_turns: 0,
+            }) as never,
+        ]) {
+            expect(() =>
+                applyReshardSystemTailEntry(
+                    destination.sql,
+                    IDENTITY.migId,
+                    {
+                        lsn: 1,
+                        op: "ins",
+                        table_name: "_chardb_deleted_organizations",
+                        pk: organizationId,
+                        before: null,
+                        after,
+                    },
+                    range
+                )
+            ).toThrow(/differs from its covered tail image/);
+        }
+    });
+
     test("copies every lifecycle state and tombstone with exact idempotent retries", () => {
         populateSource();
         source.reshard.beginSource(IDENTITY, 10);

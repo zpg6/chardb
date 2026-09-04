@@ -234,10 +234,6 @@ function recordIdentity(record: CdbVectorReshardRecord): CdbVectorReshardRecordI
     });
 }
 
-export function cdbVectorReshardRecordIdentity(record: CdbVectorReshardRecord): CdbVectorReshardRecordIdentity {
-    return recordIdentity(record);
-}
-
 function compareRecordToCursor(record: CdbVectorReshardRecord, cursor: CdbVectorReshardCursor): number {
     const kind = KIND_ORDER[record.kind] - KIND_ORDER[cursor.kind];
     if (kind !== 0) return kind;
