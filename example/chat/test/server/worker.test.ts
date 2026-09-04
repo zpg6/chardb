@@ -1,10 +1,13 @@
+import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { CdbError } from "@chardb/core";
-import { postMessage } from "../../src/server/api.ts";
+import { drizzle } from "drizzle-orm/bun-sqlite";
+import { deleteMessage, editMessage, postMessage } from "../../src/server/api.ts";
 import { auth } from "../../src/server/auth.ts";
 import { listMessages } from "../../src/server/queries.ts";
+import { messages } from "../../src/server/schema.ts";
 
 describe("tutorial Better Auth integration", () => {
     test("uses Better Auth's organization and JWT plugins", () => {
@@ -143,5 +146,56 @@ describe("tutorial organization flow", () => {
         }
         expect(error).toBeInstanceOf(CdbError);
         expect(error).toMatchObject({ code: "CDB_FORBIDDEN", retryable: false });
+    });
+});
+
+describe("tutorial message lifecycle", () => {
+    test("members can edit and delete their own rows, with organization isolation", () => {
+        const sqlite = new Database(":memory:");
+        try {
+            sqlite.run(`CREATE TABLE messages (
+                id TEXT PRIMARY KEY, organization_id TEXT NOT NULL,
+                author_id TEXT NOT NULL, body TEXT NOT NULL, created_at INTEGER NOT NULL
+            )`);
+            const raw = drizzle(sqlite, { schema: { messages } });
+            const context = (userId: string, tenantId = "org-1", role = "member") => {
+                const auth = { userId, tenantId, role, claims: {} };
+                return { db: raw, auth };
+            };
+            const args = { id: "m1", organizationId: "org-1" };
+            postMessage(context("alice"), { ...args, body: "hello", clientCreatedAt: 1 });
+            expect(raw.select().from(messages).get()).toMatchObject({
+                authorId: "alice",
+                organizationId: "org-1",
+                body: "hello",
+            });
+            expect(editMessage(context("bob"), { ...args, body: "hijacked" })).toEqual({ id: "m1" });
+            expect(deleteMessage(context("bob"), args)).toEqual({ id: "m1" });
+            expect(editMessage(context("alice", "org-2"), { ...args, body: "wrong org" })).toEqual({ id: "m1" });
+            expect(deleteMessage(context("alice", "org-2"), args)).toEqual({ id: "m1" });
+            expect(raw.select().from(messages).get()?.body).toBe("hello");
+            expect(editMessage(context("alice"), { ...args, body: "edited" })).toEqual({ id: "m1" });
+            expect(raw.select().from(messages).get()?.body).toBe("edited");
+            expect(editMessage(context("bob", "org-1", "admin"), { ...args, body: "moderated" })).toEqual({ id: "m1" });
+            expect(raw.select().from(messages).get()?.body).toBe("moderated");
+            expect(deleteMessage(context("alice"), args)).toEqual({ id: "m1" });
+            expect(deleteMessage(context("alice"), args)).toEqual({ id: "m1" });
+            expect(raw.select().from(messages).all()).toEqual([]);
+        } finally {
+            sqlite.close();
+        }
+    });
+
+    test("validates edits before executing them", async () => {
+        const validate = (
+            editMessage as typeof editMessage & {
+                __chardbValidateArgs(args: unknown): Promise<unknown>;
+            }
+        ).__chardbValidateArgs;
+        const key = { organizationId: "org-1", id: "m1" };
+        expect(await validate({ ...key, body: "  edited  " })).toEqual({ ...key, body: "edited" });
+        for (const body of ["   ", "x".repeat(2_001)]) {
+            await expect(Promise.resolve().then(() => validate({ ...key, body }))).rejects.toThrow();
+        }
     });
 });

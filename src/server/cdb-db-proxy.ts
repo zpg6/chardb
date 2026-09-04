@@ -669,6 +669,11 @@ function unsupportedWrite(operation: "insert" | "update" | "delete", property: P
     return new CdbError({
         code: "CDB_UNSUPPORTED_FEATURE",
         message: `${operation} property "${String(property)}" is unavailable through the policy wrapper`,
+        ...(property === "returning"
+            ? {
+                  hint: "Use .run() to execute the write, then read rows through a query so read policies and column permissions apply.",
+              }
+            : {}),
     });
 }
 

@@ -1,5 +1,6 @@
 import { CdbError } from "@chardb/core";
 import { api } from "@chardb/core/server";
+import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { messages } from "./schema.ts";
 
@@ -21,6 +22,30 @@ export const postMessage = api.mutation({
             });
         }
         ctx.db.insert(messages).values({ id: args.id, body: args.body, createdAt: args.clientCreatedAt }).run();
+        return { id: args.id };
+    },
+});
+
+const messageKey = z.object({ organizationId: z.string(), id: z.string().min(1) });
+
+export const editMessage = api.mutation({
+    ref: "src/server/api.ts#editMessage",
+    authority: "organization",
+    partitionKey: "organizationId",
+    args: messageKey.extend({ body: z.string().trim().min(1).max(2_000) }),
+    handler: (ctx, args) => {
+        ctx.db.update(messages).set({ body: args.body }).where(eq(messages.id, args.id)).run();
+        return { id: args.id };
+    },
+});
+
+export const deleteMessage = api.mutation({
+    ref: "src/server/api.ts#deleteMessage",
+    authority: "organization",
+    partitionKey: "organizationId",
+    args: messageKey,
+    handler: (ctx, args) => {
+        ctx.db.delete(messages).where(eq(messages.id, args.id)).run();
         return { id: args.id };
     },
 });

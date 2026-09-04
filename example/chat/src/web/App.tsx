@@ -3,7 +3,7 @@ import { type Organization, anonymousClient, jwtClient, organizationClient } fro
 import { createAuthClient } from "better-auth/react";
 import { type FormEvent, useEffect, useState } from "react";
 import { uuidv7 } from "uuidv7";
-import { postMessage } from "../server/api.ts";
+import { deleteMessage, editMessage, postMessage } from "../server/api.ts";
 import { listMessages } from "../server/queries.ts";
 
 const db = createChardbReactClient({
@@ -163,7 +163,7 @@ function Workspace() {
             </section>
 
             {activeOrganizationId && userId ? (
-                <Messages organizationId={activeOrganizationId} userId={userId} />
+                <Messages key={activeOrganizationId} organizationId={activeOrganizationId} userId={userId} />
             ) : (
                 <section className="messages" data-testid="message-list">
                     <p className="empty">Create or choose an organization to start.</p>
@@ -177,6 +177,9 @@ function Workspace() {
 function Messages({ organizationId, userId }: { readonly organizationId: string; readonly userId: string }) {
     const { data = [], state } = db.useQuery(listMessages, { limit: 50 });
     const mutate = db.useMutation(postMessage);
+    const edit = db.useMutation(editMessage);
+    const remove = db.useMutation(deleteMessage);
+    const [editingId, setEditingId] = useState<string | null>(null);
     const [body, setBody] = useState("");
     const [sending, setSending] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -188,12 +191,30 @@ function Messages({ organizationId, userId }: { readonly organizationId: string;
         setSending(true);
         setError(null);
         try {
-            await mutate({
-                id: uuidv7(),
-                body: message,
-                clientCreatedAt: Date.now(),
-            });
+            if (editingId) {
+                await edit({ id: editingId, body: message });
+            } else {
+                await mutate({ id: uuidv7(), body: message, clientCreatedAt: Date.now() });
+            }
+            setEditingId(null);
             setBody("");
+        } catch (cause) {
+            setError(cause instanceof Error ? cause.message : String(cause));
+        } finally {
+            setSending(false);
+        }
+    }
+
+    async function deleteRow(id: string) {
+        if (sending) return;
+        setSending(true);
+        setError(null);
+        try {
+            await remove({ id });
+            if (editingId === id) {
+                setEditingId(null);
+                setBody("");
+            }
         } catch (cause) {
             setError(cause instanceof Error ? cause.message : String(cause));
         } finally {
@@ -215,11 +236,36 @@ function Messages({ organizationId, userId }: { readonly organizationId: string;
                 data-organization-id={organizationId}
                 aria-live="polite"
             >
-                {data.length === 0 ? <p className="empty">No messages yet.</p> : null}
+                {state === "pending" ? <p className="empty">Loading messages...</p> : null}
+                {state === "error" ? (
+                    <p role="alert" className="error">
+                        Could not load messages. Check your connection and organization access.
+                    </p>
+                ) : null}
+                {state === "live" && data.length === 0 ? <p className="empty">No messages yet.</p> : null}
                 {[...data].reverse().map(message => (
                     <article key={message.id} className={message.authorId === userId ? "mine" : undefined}>
                         <small>{message.authorId === userId ? "you" : message.authorId}</small>
                         <p>{message.body}</p>
+                        <small>{new Date(message.createdAt).toLocaleTimeString()}</small>
+                        {message.authorId === userId ? (
+                            <div className="message-actions">
+                                <button
+                                    type="button"
+                                    disabled={sending}
+                                    onClick={() => {
+                                        setEditingId(message.id);
+                                        setBody(message.body);
+                                        setError(null);
+                                    }}
+                                >
+                                    Edit
+                                </button>
+                                <button type="button" disabled={sending} onClick={() => void deleteRow(message.id)}>
+                                    Delete
+                                </button>
+                            </div>
+                        ) : null}
                     </article>
                 ))}
             </section>
@@ -229,15 +275,32 @@ function Messages({ organizationId, userId }: { readonly organizationId: string;
                     aria-label="Message"
                     value={body}
                     maxLength={2_000}
-                    placeholder="Write a message"
+                    placeholder={editingId ? "Edit your message" : "Write a message"}
                     disabled={sending}
                     onChange={event => setBody(event.target.value)}
                 />
                 <button type="submit" disabled={sending || !body.trim()}>
-                    {sending ? "Sending..." : "Send"}
+                    {sending ? "Saving..." : editingId ? "Save" : "Send"}
                 </button>
             </form>
-            {error ? <p className="error">{error}</p> : null}
+            {editingId ? (
+                <button
+                    type="button"
+                    disabled={sending}
+                    onClick={() => {
+                        setEditingId(null);
+                        setBody("");
+                        setError(null);
+                    }}
+                >
+                    Cancel edit
+                </button>
+            ) : null}
+            {error ? (
+                <p role="alert" className="error">
+                    {error}
+                </p>
+            ) : null}
         </>
     );
 }

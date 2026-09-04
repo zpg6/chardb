@@ -12,6 +12,7 @@ const worker = Bun.spawn(
         "dev",
         "--config",
         "wrangler.template.toml",
+        ...(process.env.CHARDB_PERSIST_TO ? ["--persist-to", process.env.CHARDB_PERSIST_TO] : []),
         "--ip",
         origin.hostname,
         "--port",
