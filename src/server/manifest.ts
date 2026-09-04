@@ -42,7 +42,11 @@ import { stableHashHex, stableJson } from "../util/canonical.ts";
 import { CDB_VECTOR_SEARCH_MAX_RESULTS } from "../vector.ts";
 import type { CdbIntent } from "../wire.ts";
 import type { MutationAuthority } from "./define.ts";
-import type { RegisteredQueryPlan, RegisteredVectorQueryPlan } from "./registered-query-plan.ts";
+import {
+    type RegisteredQueryPlan,
+    type RegisteredVectorQueryPlan,
+    registeredSelectQueryPlanHash,
+} from "./registered-query-plan.ts";
 import { isChardbVectorResourceDescriptor, normalizeChardbResourceDescriptor } from "./resource-descriptors.ts";
 import {
     CDB_JSON_MAX_AGGREGATE_MEMBERS,
@@ -148,7 +152,19 @@ function registeredSelectPlan(compiled: RegisteredQueryPlan | undefined, ref: st
         orderBy.every(
             (item, index) =>
                 item.column === compiled.orderBy[index]?.column && item.direction === compiled.orderBy[index]?.direction
-        );
+        ) &&
+        compiled.planHash ===
+            registeredSelectQueryPlanHash({
+                version: compiled.version,
+                kind: compiled.kind,
+                plan,
+                authority: compiled.authority,
+                partitionKey: compiled.partitionKey,
+                intent: compiled.intent,
+                projection: compiled.projection,
+                orderBy: compiled.orderBy,
+                limit: compiled.limit,
+            });
     if (!metadataMatches) {
         throw new CdbError({
             code: "CDB_INVARIANT",

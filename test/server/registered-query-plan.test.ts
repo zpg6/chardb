@@ -179,7 +179,6 @@ describe("registered query plan", () => {
             { column: "id", direction: "desc" },
         ]);
         expect(plan?.limit).toBe(25);
-        expect(plan?.planHash).toBe("6f579496424a5e724bda62a9ad7922db07ab102f9038e4434b00f1efb9dc03e2");
         expect(listPlannedRows.__chardbCompilePlan?.({ namespace: "public", channelId: "news", limit: 25 })).toEqual(
             plan
         );
@@ -314,6 +313,38 @@ describe("registered query plan", () => {
         expect(first.partitionKey).toBe("public");
         expect(first.intent.intervals?.map(interval => interval.indexName)).toEqual(["namespace", "channel_id"]);
         expect(first.queryHash).not.toBe(second.queryHash);
+    });
+
+    test("rejects a changed select plan that retains its old compiler hash", () => {
+        const manifest = manifestFromExports({ listPlannedRows });
+        const descriptor = manifest.queries.get(listPlannedRows.__chardbRef);
+        if (!descriptor) throw new Error("planned query fixture omitted its manifest descriptor");
+        const compilePlan = descriptor.compilePlan;
+        (manifest.queries as Map<ChardbRef, typeof descriptor>).set(listPlannedRows.__chardbRef, {
+            ...descriptor,
+            compilePlan: args => {
+                const compiled = compilePlan(args);
+                if (compiled.kind !== "select") throw new Error("select fixture compiled a vector plan");
+                return {
+                    ...compiled,
+                    plan: {
+                        ...compiled.plan,
+                        where: { kind: "compare", op: "eq", column: "namespace", value: "private" } as const,
+                    },
+                };
+            },
+        });
+
+        expect(() =>
+            routeValidatedQuery(
+                manifest,
+                {
+                    ref: listPlannedRows.__chardbRef,
+                    args: { namespace: "public", channelId: "news", limit: 25 },
+                },
+                () => "policy"
+            )
+        ).toThrow("canonical select plan disagrees with its compiler metadata");
     });
 
     test("derives user authority from table metadata", () => {

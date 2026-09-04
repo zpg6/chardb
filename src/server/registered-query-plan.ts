@@ -9,7 +9,6 @@ import {
 } from "../binding-plan.ts";
 import { StaticIntentExtractor, intervalsForColumnPredicate } from "../drizzle/walker.ts";
 import { CdbError } from "../errors.ts";
-import type { RawJson } from "../types.ts";
 import { stableHashHex } from "../util/canonical.ts";
 import { isChardbVectorSearchBuilder, normalizeChardbVectorSearchBuilder } from "../vector.ts";
 import type { CdbIntent } from "../wire.ts";
@@ -45,6 +44,10 @@ export interface RegisteredVectorQueryPlan extends RegisteredQueryPlanBase {
 }
 
 export type RegisteredQueryPlan = RegisteredSelectQueryPlan | RegisteredVectorQueryPlan;
+
+export function registeredSelectQueryPlanHash(plan: Omit<RegisteredSelectQueryPlan, "planHash">): string {
+    return stableHashHex(plan);
+}
 
 interface PlannedSelectBuilder {
     readonly config: SQLiteSelectConfig;
@@ -218,29 +221,7 @@ export function compileRegisteredQueryPlan<TDb, TArgs>(
             `ORDER BY must end with primary key column${primaryKeys.length === 1 ? "" : "s"} ${primaryKeys.join(", ")}`
         );
     }
-    const compiled = built.toSQL();
     const hashInput = {
-        version: 1,
-        authority,
-        partitionKey: partitionValues[0],
-        intent,
-        projection,
-        orderBy,
-        limit,
-        sql: compiled.sql,
-        params: compiled.params as readonly RawJson[],
-    } as const;
-    let planHash: string;
-    try {
-        planHash = stableHashHex(hashInput);
-    } catch (cause) {
-        throw new CdbError({
-            code: "CDB_INVALID_ARGS",
-            message: "planned query contains non-JSON SQL parameters",
-            cause,
-        });
-    }
-    return {
         version: 1,
         kind: "select",
         plan,
@@ -250,6 +231,9 @@ export function compileRegisteredQueryPlan<TDb, TArgs>(
         projection,
         orderBy,
         limit,
-        planHash,
+    } as const;
+    return {
+        ...hashInput,
+        planHash: registeredSelectQueryPlanHash(hashInput),
     };
 }

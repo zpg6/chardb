@@ -24,16 +24,7 @@ import {
 } from "../../types.ts";
 import { stableJson } from "../../util/canonical.ts";
 import { vshardOf } from "../../vshard.ts";
-import {
-    type CdbIntent,
-    type Down,
-    type MustRefetchReason,
-    PROTOCOL_V,
-    type Up,
-    checkProtocolV,
-    decodeUp,
-    encodeWire,
-} from "../../wire.ts";
+import { type CdbIntent, type Down, PROTOCOL_V, type Up, checkProtocolV, decodeUp, encodeWire } from "../../wire.ts";
 import { cdbPolicyDigest } from "../cdb-policy.ts";
 import type { MutationAuthority } from "../define.ts";
 import { withChardbLoopbacks } from "../loopback.ts";
@@ -2317,12 +2308,6 @@ export class Gateway extends DurableObject<GatewayEnv> {
     private catalog(): CatalogRoutingRpc {
         const id = this.env.CDB_CATALOG.idFromName("global");
         return this.env.CDB_CATALOG.get(id) as unknown as CatalogRoutingRpc;
-    }
-
-    emitMustRefetch(subIds: readonly SubId[], reason: MustRefetchReason): void {
-        for (const ws of this.ctx.getWebSockets()) {
-            this.send(ws, { t: "mustRefetch", subIds, reason });
-        }
     }
 
     private send(ws: WebSocket, down: Down): void {

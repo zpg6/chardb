@@ -176,10 +176,6 @@ function subscriptionCapacityExceeded(subject: string, limit: number): CdbError 
     });
 }
 
-export function subscriptionKey(subscription: LiveSubscriptionId): string {
-    return JSON.stringify([subscription.gatewayId, subscription.registrationId]);
-}
-
 export function assertLiveSubscriptionIdentity(subscription: LiveSubscriptionId): void {
     for (const [name, value] of [
         ["gatewayId", subscription.gatewayId],
