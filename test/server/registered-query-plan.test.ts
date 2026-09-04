@@ -184,6 +184,18 @@ describe("registered query plan", () => {
         );
     });
 
+    test.each([
+        inArray(plannedRows.namespace, ["public", "public"]),
+        or(eq(plannedRows.namespace, "public"), eq(plannedRows.namespace, "public")),
+    ])("accepts repeated references to the same partition", where => {
+        const plan = compileRegisteredQueryPlan(
+            (db: QueryBuilder) => db.select().from(plannedRows).where(where).orderBy(plannedRows.id).limit(10),
+            {}
+        );
+        expect(plan.partitionKey).toBe("public");
+        expect(plan.intent.partitionKey?.values).toEqual(["public"]);
+    });
+
     test("emits the same canonical plan as the direct select compiler", async () => {
         const directPlans: ChardbSelectPlanV1[] = [];
         const select = createBindingSelect(async plan => {

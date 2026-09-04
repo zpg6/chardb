@@ -1548,6 +1548,7 @@ export function markGatewaySnapshotSendBaseCookie(
         `UPDATE _gw_snapshot_outbox
          SET attachment_base_cookie = COALESCE(attachment_base_cookie, ?)
          WHERE registration_id = ? AND cookie = ? AND claim_token = ? AND claim_version = ?
+           AND claim_expires_at > ?
            AND EXISTS (
              SELECT 1
              FROM _gw_registration_generations g
@@ -1565,6 +1566,7 @@ export function markGatewaySnapshotSendBaseCookie(
         input.cookie,
         input.claimToken,
         input.claimVersion,
+        nowMs,
         input.principalId,
         input.clientId,
         input.subId,
