@@ -244,6 +244,60 @@ describe("Gateway verified JWT boundary", () => {
         }
     );
 
+    test.each([undefined, 30, 10, 0])(
+        "uses clock tolerance %s for verification and operation boundaries",
+        async tolerance => {
+            const { catalog, sign } = await signingFixture();
+            const now = Math.floor(Date.now() / 1000);
+            const jwtConfig = config();
+            const { clockToleranceSeconds: _, ...withoutTolerance } = jwtConfig;
+            const configured =
+                tolerance === undefined ? withoutTolerance : config({ clockToleranceSeconds: tolerance });
+            const verify = (token: string) =>
+                verifyGatewayJwt({
+                    config: configured,
+                    authOrigin: ORIGIN,
+                    connectionId: CONNECTION_ID,
+                    catalog,
+                    jwt: token,
+                    clientId: ClientId("client-1"),
+                });
+            const expired = await sign({ expirationTime: now - 5 });
+            const premature = await sign({ notBefore: now + 5 });
+            if (tolerance === 0) {
+                await expect(verify(expired)).rejects.toMatchObject({ code: "CDB_FORBIDDEN" });
+                await expect(verify(premature)).rejects.toMatchObject({ code: "CDB_FORBIDDEN" });
+            } else {
+                const effectiveTolerance = tolerance ?? 30;
+                const attachment = await verify(expired);
+                expect(isCurrentVerifiedAttachment(attachment, now)).toBe(true);
+                expect(isCurrentVerifiedAttachment(attachment, now - 6 + effectiveTolerance)).toBe(true);
+                expect(isCurrentVerifiedAttachment(attachment, now - 5 + effectiveTolerance)).toBe(false);
+                const early = await verify(premature);
+                expect(isCurrentVerifiedAttachment(early, now + 4 - effectiveTolerance)).toBe(false);
+                expect(isCurrentVerifiedAttachment(early, now + 5 - effectiveTolerance)).toBe(true);
+            }
+            await expect(verify(await sign({ expirationTime: now - 30 }))).rejects.toMatchObject({
+                code: "CDB_FORBIDDEN",
+            });
+            await expect(verify(await sign({ notBefore: now + 60 }))).rejects.toMatchObject({ code: "CDB_FORBIDDEN" });
+        }
+    );
+
+    test.each([-1, Number.NaN, Number.POSITIVE_INFINITY])("rejects invalid clock tolerance %s", async tolerance => {
+        const { catalog, sign } = await signingFixture();
+        await expect(
+            verifyGatewayJwt({
+                config: config({ clockToleranceSeconds: tolerance }),
+                authOrigin: ORIGIN,
+                connectionId: CONNECTION_ID,
+                catalog,
+                jwt: await sign(),
+                clientId: ClientId("client-1"),
+            })
+        ).rejects.toMatchObject({ code: "CDB_FORBIDDEN" });
+    });
+
     test("accepts a token audience array when one value matches", async () => {
         const { catalog, sign } = await signingFixture();
         await expect(

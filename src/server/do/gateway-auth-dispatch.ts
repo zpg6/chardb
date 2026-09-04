@@ -4,7 +4,7 @@ import {
     createCatalogJwksResolver,
     createCatalogOwnedJwksResolver,
 } from "../../auth/jwks_cache.ts";
-import { verifyJwt } from "../../auth/jwt.ts";
+import { DEFAULT_JWT_CLOCK_TOLERANCE_SECONDS, verifyJwt } from "../../auth/jwt.ts";
 import { CdbError, isCdbError, isCdbErrorCode, isRetryable } from "../../errors.ts";
 import {
     type ChardbRef,
@@ -46,8 +46,9 @@ export interface VerifiedGwAttachment {
     readonly resumeRefetchPendingSubIds?: readonly SubId[];
     /** Subject from a signature-verified token. */
     readonly principalId: PrincipalId;
-    /** Required JWT expiry in epoch seconds. */
+    /** Exclusive expiry boundary in epoch seconds, including the verified clock tolerance. */
     readonly jwtExp: number;
+    /** Inclusive not-before boundary in epoch seconds, including the verified clock tolerance. */
     readonly jwtNbf?: number;
 }
 
@@ -481,14 +482,13 @@ export async function verifyGatewayJwt(request: GatewayJwtVerificationRequest): 
               jwksUrl
           )
         : createCatalogJwksResolver({ catalog: request.catalog, jwksUrl });
+    const tolerance = request.config.clockToleranceSeconds ?? DEFAULT_JWT_CLOCK_TOLERANCE_SECONDS;
     const claims = await verifyJwt(request.jwt, {
         resolver,
         issuer,
         audience,
         algorithms: request.config.algorithms,
-        ...(request.config.clockToleranceSeconds !== undefined
-            ? { clockToleranceSeconds: request.config.clockToleranceSeconds }
-            : {}),
+        clockToleranceSeconds: tolerance,
     });
     if (typeof claims.sub !== "string" || typeof claims.exp !== "number") {
         throw new CdbError({ code: "CDB_FORBIDDEN", message: "verified JWT is missing subject or expiry" });
@@ -500,8 +500,8 @@ export async function verifyGatewayJwt(request: GatewayJwtVerificationRequest): 
         clientId: request.clientId,
         ...(request.lastCookie !== undefined ? { lastCookie: request.lastCookie } : {}),
         principalId: PrincipalId(claims.sub),
-        jwtExp: claims.exp,
-        ...(typeof claims.nbf === "number" ? { jwtNbf: claims.nbf } : {}),
+        jwtExp: claims.exp + tolerance,
+        ...(typeof claims.nbf === "number" ? { jwtNbf: claims.nbf - tolerance } : {}),
     };
 }
 
