@@ -1,6 +1,8 @@
 import { type JWK, decodeJwt, decodeProtectedHeader, importJWK, errors as joseErrors, jwtVerify } from "jose";
 import { CdbError } from "../errors.ts";
 
+export const DEFAULT_JWT_CLOCK_TOLERANCE_SECONDS = 30;
+
 export interface JwtClaims {
     /** Subject — the principal the token represents. */
     readonly sub?: string;
@@ -52,6 +54,10 @@ export interface VerifyJwtOptions {
  * JWKS refresh + retry.
  */
 export async function verifyJwt(jwt: string, opts: VerifyJwtOptions): Promise<JwtClaims> {
+    const tolerance = opts.clockToleranceSeconds ?? DEFAULT_JWT_CLOCK_TOLERANCE_SECONDS;
+    if (!Number.isFinite(tolerance) || tolerance < 0) {
+        throw new CdbError({ code: "CDB_FORBIDDEN", message: "verifyJwt: invalid clock tolerance" });
+    }
     let header: ReturnType<typeof decodeProtectedHeader>;
     let claims: ReturnType<typeof decodeJwt>;
     try {
@@ -68,7 +74,7 @@ export async function verifyJwt(jwt: string, opts: VerifyJwtOptions): Promise<Jw
         claims.sub.length === 0 ||
         typeof claims.exp !== "number" ||
         !Number.isFinite(claims.exp) ||
-        claims.exp <= Math.floor(Date.now() / 1000) ||
+        claims.exp <= Math.floor(Date.now() / 1000) - tolerance ||
         (claims.nbf !== undefined && !Number.isFinite(claims.nbf)) ||
         (claims.iat !== undefined && !Number.isFinite(claims.iat))
     ) {
@@ -98,7 +104,7 @@ export async function verifyJwt(jwt: string, opts: VerifyJwtOptions): Promise<Jw
             ...(audience ? { audience } : {}),
             algorithms: [...opts.algorithms],
             requiredClaims: ["sub", "exp"],
-            clockTolerance: opts.clockToleranceSeconds ?? 30,
+            clockTolerance: tolerance,
         });
         if (typeof payload.sub !== "string" || payload.sub.length === 0) {
             throw new CdbError({ code: "CDB_FORBIDDEN", message: "verifyJwt: missing subject" });
