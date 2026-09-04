@@ -9,6 +9,8 @@ on:
       - LICENSE
       - .github/CODEOWNERS
       - landing/**
+      - .github/workflows/ci.yml
+      - .github/workflows/landing.yml
   pull_request:
     paths-ignore:
       - '**.md'
@@ -16,6 +18,8 @@ on:
       - LICENSE
       - .github/CODEOWNERS
       - landing/**
+      - .github/workflows/ci.yml
+      - .github/workflows/landing.yml
 
 permissions:
   contents: read
