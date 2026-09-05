@@ -48,18 +48,28 @@ export function exportRef(kind: ChardbFunctionKind, name: string): string {
 }
 
 export function bindExportRefs(exports: Record<string, unknown>): void {
-    const seen = new Set<unknown>();
+    type AutoRefHandle = ChardbRefMarker & {
+        readonly __chardbAutoRef?: boolean;
+        readonly __chardbExportName?: string;
+    };
+    const namesByHandle = new Map<AutoRefHandle, [string, ...string[]]>();
     for (const [name, value] of Object.entries(exports)) {
-        if (typeof value !== "function" || seen.has(value)) continue;
-        seen.add(value);
-        const handle = value as unknown as ChardbRefMarker & {
-            readonly __chardbAutoRef?: boolean;
-            readonly __chardbExportName?: string;
-        };
+        if (typeof value !== "function") continue;
+        const handle = value as unknown as AutoRefHandle;
         if (!handle.__chardbAutoRef) continue;
-        if (handle.__chardbExportName !== undefined && handle.__chardbExportName !== name) {
-            throw new TypeError(`chardb: API export ${name} was already registered as ${handle.__chardbExportName}`);
+        const names = namesByHandle.get(handle);
+        if (names) names.push(name);
+        else namesByHandle.set(handle, [name]);
+    }
+    for (const [handle, names] of namesByHandle) {
+        const bound = handle.__chardbExportName;
+        if (bound !== undefined) {
+            if (!names.includes(bound)) {
+                throw new TypeError(`chardb: API export ${names[0]} was already registered as ${bound}`);
+            }
+            continue;
         }
+        const name = names.reduce((first, candidate) => (candidate < first ? candidate : first));
         Object.defineProperty(handle, "__chardbExportName", { value: name, configurable: true });
         Object.defineProperty(handle, REF_KEY, {
             value: ChardbRef(exportRef(handle.__chardbKind, name)),
