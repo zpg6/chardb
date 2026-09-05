@@ -4,7 +4,6 @@ import { z } from "zod";
 import { messages } from "./schema.ts";
 
 export const listMessages = api.query({
-    ref: "src/server/queries.ts#listMessages",
     args: z.object({
         organizationId: z.string(),
         limit: z.number().int().min(1).max(100).default(50),

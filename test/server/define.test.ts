@@ -18,7 +18,7 @@ describe("defineXxx — function-ref identity", () => {
         expect(out).toBe(2);
     });
 
-    test("planned query carries a runtime compiler, is dispatch-only, and requires a stable ref", async () => {
+    test("planned query carries a runtime compiler, is dispatch-only, and accepts an optional ref", async () => {
         const { cdbTable } = globalScope();
         const rows = cdbTable(
             "define_planned_rows",
@@ -38,7 +38,8 @@ describe("defineXxx — function-ref identity", () => {
             planned({ db: {}, auth: { userId: "user-1", claims: {} } } as never, { scope: "shared" })
         ).rejects.toMatchObject({ code: "CDB_UNSUPPORTED_FEATURE" });
         expect(compileRuns).toBe(1);
-        expect(() => defineQuery({ query: (() => null) as never } as never)).toThrow("query ref must be");
+        expect(defineQuery({ query: (() => null) as never }).__chardbKind).toBe("query");
+        expect(() => defineQuery({ ref: "invalid", query: (() => null) as never })).toThrow("query ref must be");
         expect(() =>
             defineQuery({
                 ref: "api/define#mixed",
@@ -138,13 +139,13 @@ describe("defineXxx — function-ref identity", () => {
         const mutation = defineMutation({ ref: "api/items#create", handler: () => null });
         expect(mutation.__chardbRef).toBe(ChardbRef("api/items#create"));
         expect(() => defineMutation({ ref: "missing-separator", handler: () => null })).toThrow(/containing #/);
-        expect(() =>
+        expect(
             defineMutation({
                 authority: "organization",
                 partitionKey: (_args: { organizationId: string }) => "org-1",
                 handler: () => null,
-            } as never)
-        ).toThrow(/require an explicit ref/);
+            }).__chardbKind
+        ).toBe("mutation");
     });
 
     test("explicit singlePartition: false beats the partitionKey-implied default", () => {

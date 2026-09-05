@@ -956,6 +956,8 @@ describe("wrapDb / cdbTable update authorization", () => {
             wrapDb(policyDb.db, baseAuth).update(profiles).set({ displayName: "secret" }).returning()
         );
         expect(returned.message).toContain('update property "returning"');
+        expect(returned.hint).toContain("Use .run()");
+        expect(returned.hint).toContain("read policies and column permissions");
 
         const raw = sqliteTable("raw_update_passthrough", {
             id: text("id").primaryKey(),

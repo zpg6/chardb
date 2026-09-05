@@ -24,7 +24,7 @@ type PartitionKeyOf<TArgs> = {
 
 export interface OrganizationMutationConfig<TDb, TArgs extends Record<string, unknown>, TResult> {
     readonly authority: "organization";
-    readonly ref: string;
+    readonly ref?: string;
     readonly args?: StandardSchemaV1<unknown, TArgs>;
     readonly handler: (ctx: MutationCtx<TDb>, args: TArgs) => TResult;
     readonly partitionKey?: PartitionKeyOf<TArgs> | ((args: TArgs) => string | number | bigint | undefined);
@@ -35,7 +35,7 @@ export interface OrganizationMutationConfig<TDb, TArgs extends Record<string, un
 
 export interface UserMutationConfig<TDb, TArgs extends Record<string, unknown>, TResult> {
     readonly authority: "user";
-    readonly ref: string;
+    readonly ref?: string;
     readonly args?: StandardSchemaV1<unknown, TArgs>;
     readonly handler: (ctx: MutationCtx<TDb>, args: TArgs) => TResult;
     readonly partitionKey: PartitionKeyOf<TArgs> | ((args: TArgs) => string | number | bigint | undefined);

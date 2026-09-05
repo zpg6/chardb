@@ -12,7 +12,7 @@ import {
     routeQuery,
     routeValidatedQuery,
 } from "../../src/server/manifest.ts";
-import type { ChardbRef } from "../../src/types.ts";
+import { ChardbRef } from "../../src/types.ts";
 import { globalScope } from "../helpers/cdb-table.ts";
 
 const { cdbTable } = globalScope();
@@ -44,6 +44,86 @@ describe("manifestFromExports", () => {
         expect(manifest.queries.size).toBe(1);
         expect(resolveMutation(manifest, createRow.__chardbRef).singlePartition).toBe(true);
         expect(resolveQuery(manifest, listRows.__chardbRef).compilePlan).toBeDefined();
+    });
+
+    test("binds unnamed handlers and queries to API export names", () => {
+        const first = api.mutation({
+            authority: "organization",
+            partitionKey: "organizationId",
+            args: z.object({ organizationId: z.string() }),
+            handler: () => "first",
+        });
+        const second = api.mutation({
+            authority: "organization",
+            partitionKey: "organizationId",
+            args: z.object({ organizationId: z.string() }),
+            handler: () => "second",
+        });
+        const list = api.query({
+            query: (db, args: { scope: string }) =>
+                db.select().from(rows).where(eq(rows.scope, args.scope)).orderBy(rows.id).limit(10),
+        });
+        const manifest = manifestFromExports({ first, second, list });
+        expect([...manifest.mutations.keys()]).toEqual([ChardbRef("mutation#first"), ChardbRef("mutation#second")]);
+        expect([...manifest.queries.keys()]).toEqual([ChardbRef("query#list")]);
+        expect(first.__chardbRef).toBe(ChardbRef("mutation#first"));
+        expect(
+            resolveMutation(manifest, second.__chardbRef).invoke(
+                { db: {}, auth: { userId: "u", claims: {} } },
+                { organizationId: "org" }
+            )
+        ).toBe("second");
+        expect(
+            routeValidatedQuery(manifest, { ref: list.__chardbRef, args: { scope: "shared" } }, () => "policy")
+                .partitionKey
+        ).toBe("shared");
+        expect(() => manifestFromExports({ renamed: first })).toThrow("already registered as first");
+    });
+
+    test("chooses the same alias regardless of export order", () => {
+        for (const kind of ["mutation", "query"] as const) {
+            const create = () =>
+                kind === "mutation"
+                    ? api.mutation({ handler: () => null })
+                    : api.query({ query: db => db.select().from(rows).where(eq(rows.scope, "shared")) });
+            const first = create();
+            const second = create();
+            const left = manifestFromExports({ save: first, alias: first });
+            const right = manifestFromExports({ alias: second, save: second });
+            const ref = ChardbRef(`${kind}#alias`);
+            expect(first.__chardbRef).toBe(ref);
+            expect(second.__chardbRef).toBe(ref);
+            expect([...left.mutations.keys(), ...left.queries.keys()]).toEqual([ref]);
+            expect([...right.mutations.keys(), ...right.queries.keys()]).toEqual([ref]);
+        }
+    });
+
+    test("retains a bound name when aliases are added or reordered", () => {
+        const save = api.mutation({ handler: () => null });
+        manifestFromExports({ save });
+        const ref = save.__chardbRef;
+        for (const exports of [
+            { alias: save, save },
+            { save, alias: save },
+        ]) {
+            expect([...manifestFromExports(exports).mutations.keys()]).toEqual([ref]);
+            expect(save.__chardbRef).toBe(ref);
+        }
+        expect(() => manifestFromExports({ alias: save })).toThrow("already registered as save");
+        expect(save.__chardbRef).toBe(ref);
+    });
+
+    test("preserves explicit refs across alias containers", () => {
+        const save = api.mutation({ ref: "messages#save", handler: () => null });
+        for (const exports of [{ save, alias: save }, { alias: save }, { renamed: save }]) {
+            expect([...manifestFromExports(exports).mutations.keys()]).toEqual([ChardbRef("messages#save")]);
+        }
+    });
+
+    test("rejects an explicit ref that collides with an automatic ref", () => {
+        const save = api.mutation({ handler: () => null });
+        const explicit = api.mutation({ ref: "mutation#save", handler: () => null });
+        expect(() => manifestFromExports({ save, explicit })).toThrow("duplicate ref");
     });
 
     test("routes a compiled plan and includes its plan hash", () => {

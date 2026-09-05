@@ -421,13 +421,13 @@ describe("chardb init + doctor end-to-end", () => {
         expect(files.get("/tmp/proj/src/schema.ts")).toContain('attachment: file("attachment"');
         expect(files.get("/tmp/proj/src/api.ts")).toContain('partitionKey: "organizationId"');
         expect(files.get("/tmp/proj/src/api.ts")).toContain('authority: "organization"');
-        expect(files.get("/tmp/proj/src/api.ts")).toContain('ref: "messages#create"');
-        expect(files.get("/tmp/proj/src/api.ts")).toContain('ref: "messages#replaceAttachment"');
+        expect(files.get("/tmp/proj/src/api.ts")).not.toContain("ref:");
+        expect(files.get("/tmp/proj/src/api.ts")).toContain("export const replaceMessageAttachment");
         expect(files.get("/tmp/proj/src/api.ts")).toContain("handler: (ctx, args) =>");
         expect(files.get("/tmp/proj/src/api.ts")).toContain("}).run()");
         expect(files.get("/tmp/proj/src/api.ts")).not.toContain("handler: async");
         expect(files.get("/tmp/proj/src/api.ts")).not.toContain("tenantScope");
-        expect(files.get("/tmp/proj/src/queries.ts")).toContain('ref: "messages#list"');
+        expect(files.get("/tmp/proj/src/queries.ts")).not.toContain("ref:");
         expect(files.get("/tmp/proj/src/migrations.ts")).toContain('from "./migrations/v1.ts"');
         expect(files.get("/tmp/proj/src/migrations/v1.ts")).toContain("defineSchemaSnapshot");
         expect(files.get("/tmp/proj/src/worker.ts")).toContain('app.get("/api/messages"');

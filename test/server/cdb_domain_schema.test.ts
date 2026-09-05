@@ -153,9 +153,10 @@ describe("configured Cdb domain schema", () => {
                 return args.id;
             },
         });
+        const manifest = manifestFromExports({ createProject, createRoutedProject });
         const ConfiguredCdb = configureCdbRuntime({
             schema: () => schema,
-            manifest: () => manifestFromExports({ createProject, createRoutedProject }),
+            manifest: () => manifest,
         });
         const first = construct(ConfiguredCdb, db);
         await first.ready;
@@ -855,10 +856,11 @@ describe("configured Cdb domain schema", () => {
                 return args.id;
             },
         });
+        const manifest = manifestFromExports({ createDocument });
         const configured = construct(
             configureCdbRuntime({
                 schema: () => schema,
-                manifest: () => manifestFromExports({ createDocument }),
+                manifest: () => manifest,
             }),
             db
         );

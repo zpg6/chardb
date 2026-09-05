@@ -1,14 +1,4 @@
-/**
- * Function-reference identity for `defineMutation` / `defineQuery` / etc.
- *
- * Definitions with an explicit `ref` use it in Worker and browser builds.
- * The Vite plugin also stamps a module-and-export ref on older definitions
- * that omit one. Clients pass the function itself (`useMutation(postMessage)`);
- * the SDK reads `__chardbRef` to fill the wire field.
- *
- * For tests/dev (no bundler), refs are auto-derived from `Function.name` so
- * the helpers work end-to-end before the plugin runs.
- */
+/** Handle identity shared by runtime API registration and browser transforms. */
 
 import { ChardbRef } from "../types.ts";
 
@@ -25,6 +15,7 @@ export interface ChardbRefMarker {
 export function attachRef<T extends object>(target: T, kind: ChardbFunctionKind, ref?: string): T & ChardbRefMarker {
     const value: ChardbRef = ChardbRef(ref ?? autoRef(target, kind));
     Object.defineProperty(target, REF_KEY, { value, enumerable: false, configurable: true });
+    if (ref === undefined) Object.defineProperty(target, "__chardbAutoRef", { value: true });
     Object.defineProperty(target, "__chardbKind", {
         value: kind,
         enumerable: false,
@@ -50,4 +41,39 @@ function autoRef(target: object, kind: ChardbFunctionKind): string {
             ? (target as { name: string }).name
             : "anonymous";
     return `${kind}#${name || "anonymous"}`;
+}
+
+export function exportRef(kind: ChardbFunctionKind, name: string): string {
+    return `${kind}#${name}`;
+}
+
+export function bindExportRefs(exports: Record<string, unknown>): void {
+    type AutoRefHandle = ChardbRefMarker & {
+        readonly __chardbAutoRef?: boolean;
+        readonly __chardbExportName?: string;
+    };
+    const namesByHandle = new Map<AutoRefHandle, [string, ...string[]]>();
+    for (const [name, value] of Object.entries(exports)) {
+        if (typeof value !== "function") continue;
+        const handle = value as unknown as AutoRefHandle;
+        if (!handle.__chardbAutoRef) continue;
+        const names = namesByHandle.get(handle);
+        if (names) names.push(name);
+        else namesByHandle.set(handle, [name]);
+    }
+    for (const [handle, names] of namesByHandle) {
+        const bound = handle.__chardbExportName;
+        if (bound !== undefined) {
+            if (!names.includes(bound)) {
+                throw new TypeError(`chardb: API export ${names[0]} was already registered as ${bound}`);
+            }
+            continue;
+        }
+        const name = names.reduce((first, candidate) => (candidate < first ? candidate : first));
+        Object.defineProperty(handle, "__chardbExportName", { value: name, configurable: true });
+        Object.defineProperty(handle, REF_KEY, {
+            value: ChardbRef(exportRef(handle.__chardbKind, name)),
+            configurable: true,
+        });
+    }
 }

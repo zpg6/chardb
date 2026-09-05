@@ -3,6 +3,7 @@
  * from `@chardb/core/server`; users never type a wire identifier as a string.
  */
 
+import type { StandardSchemaV1 } from "@standard-schema/spec";
 import type { Column } from "drizzle-orm";
 import {
     type PropsWithChildren,
@@ -398,8 +399,8 @@ export interface UseQueryOptions {
  */
 export interface QueryHandleStamp<TArgs> {
     readonly __chardbRef: { toString(): string };
-    /** Type-only anchor for the handle's argument shape. */
-    readonly __chardbArgs?: TArgs;
+    /** Server argument validator; omitted by browser handle transforms. */
+    readonly __chardbArgs?: StandardSchemaV1<unknown, TArgs>;
 }
 
 /**

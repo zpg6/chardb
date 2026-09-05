@@ -545,9 +545,12 @@ async function assertPackedBrowserBundle(cwd) {
                 .map(name => readFile(join(cwd, "public", "assets", name), "utf8"))
         )
     ).join("\n");
-    assert(code.includes("messages#list"), "generated browser bundle lost the planned query ref");
-    assert(code.includes("messages#create"), "generated browser bundle lost the mutation ref");
-    assert(code.includes("messages#replaceAttachment"), "generated browser bundle lost the replacement mutation ref");
+    assert(code.includes("query#listMessages"), "generated browser bundle lost the planned query ref");
+    assert(code.includes("mutation#postMessage"), "generated browser bundle lost the mutation ref");
+    assert(
+        code.includes("mutation#replaceMessageAttachment"),
+        "generated browser bundle lost the replacement mutation ref"
+    );
     assert(code.includes("/_chardb/files/"), "generated browser bundle lost the file client");
     assert(!code.includes("cloudflare:workers"), "generated browser bundle contains a workerd-only import");
     assert(!code.includes("defineSchemaBaseline"), "generated browser bundle contains server migration code");

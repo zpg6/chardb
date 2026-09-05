@@ -277,9 +277,7 @@ async function main() {
         const args = { organizationId: primaryOrg.id, limit: 50 };
         const expectedRows = [];
         for (const connection of [primary, observer]) {
-            connection.socket.send(
-                JSON.stringify({ t: "sub", subId: 1, ref: "src/server/queries.ts#listMessages", args })
-            );
+            connection.socket.send(JSON.stringify({ t: "sub", subId: 1, ref: "query#listMessages", args }));
         }
         const initial = await Promise.all(
             [primary, observer].map(connection =>
@@ -306,7 +304,7 @@ async function main() {
                 JSON.stringify({
                     t: "mut",
                     mutId,
-                    ref: "src/server/api.ts#postMessage",
+                    ref: "mutation#postMessage",
                     args: {
                         id: message.id,
                         organizationId: primaryOrg.id,
@@ -400,7 +398,7 @@ async function main() {
             const mutation = {
                 t: "mut",
                 mutId,
-                ref: "src/server/api.ts#postMessage",
+                ref: "mutation#postMessage",
                 args: {
                     id: message.id,
                     organizationId: primaryOrg.id,
