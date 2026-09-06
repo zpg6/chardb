@@ -308,7 +308,7 @@ bun run test:correctness
 | Package | Purpose |
 | --- | --- |
 | `@chardb/core` | Worker runtime, browser client, native binding client, CLI, files, vectors, Vite, and shared types |
-| `@chardb/react` | React client: Better Auth identity plus owner-scoped hooks and live queries |
+| `@chardb/react` | React client included in this repository; registry publication is pending |
 | `chardb-client` | Rust client included in this repository; registry publication is pending |
 
 Generated projects use `wrangler.toml`. The CLI also reads `wrangler.json` and `wrangler.jsonc`.
