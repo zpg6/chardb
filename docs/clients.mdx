@@ -52,6 +52,8 @@ The Rust module holds those handles and their Serde types from the registered qu
 
 The `ts` module exports the same handles as `QueryHandle` and `MutationHandle` constants with their argument and row types, for TypeScript consumers outside the Vite build that pass them to `createChardbClient`.
 
+While `vite dev` runs and the app declares `clients`, the `chardb()` Vite plugin runs `chardb generate` at startup and after each source change (Bun must be on `PATH`); `chardb({ generate: false })` turns that off.
+
 The Rust client supports registered live queries, mutations, reconnects, mutation replay, and auth refresh. Your application must obtain the initial Better Auth JWT and provide refreshed JWTs when the client requests one. The crate does not perform sign-in. It also does not implement files, vectors, `workers-rs`, or `wasm32` transport.
 
 The crate README at `rust/chardb/README.md` covers connection, TLS, timeout, and feature details.
