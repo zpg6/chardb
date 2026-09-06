@@ -42,6 +42,7 @@ interface TokenOverrides {
     readonly issuer?: string;
     readonly audience?: string;
     readonly expirationTime?: number;
+    notBefore?: number;
 }
 
 const JWKS_WORKER = `
@@ -205,14 +206,15 @@ beforeAll(async () => {
         (privateKey: CryptoKey, kid: string) =>
         async (overrides: TokenOverrides = {}) => {
             const now = Math.floor(Date.now() / 1000);
-            return new SignJWT({ probe: "workerd", tenantId: "workerd-org-b", role: "owner", roles: ["owner"] })
+            let builder = new SignJWT({ probe: "workerd", tenantId: "workerd-org-b", role: "owner", roles: ["owner"] })
                 .setProtectedHeader({ alg: "ES256", kid })
                 .setSubject(overrides.subject ?? "workerd-user")
                 .setIssuer(overrides.issuer ?? ISSUER)
                 .setAudience(overrides.audience ?? AUDIENCE)
                 .setIssuedAt(now)
-                .setExpirationTime(overrides.expirationTime ?? now + 300)
-                .sign(privateKey);
+                .setExpirationTime(overrides.expirationTime ?? now + 300);
+            if (overrides.notBefore !== undefined) builder = builder.setNotBefore(overrides.notBefore);
+            return builder.sign(privateKey);
         };
     signToken = createSigner(initialKeyPair.privateKey, KID);
     signRotatedToken = createSigner(rotatedKeyPair.privateKey, ROTATED_KID);
@@ -1285,6 +1287,33 @@ describe("configured Gateway JWT handshake in real workerd", () => {
         });
         socket.close();
     });
+
+    test.each(["expired", "premature"])(
+        "permits mutation and refresh within clock tolerance for %s tokens",
+        async kind => {
+            if (!mutationRef) throw new Error("mutation ref was not seeded");
+            const now = Math.floor(Date.now() / 1000);
+            const token = await signed(kind === "expired" ? { expirationTime: now - 5 } : { notBefore: now + 15 });
+            const { socket, first } = await openSocket(token, { clientId: `clock-${kind}` });
+            try {
+                await expect(first).resolves.toMatchObject({ t: "welcome" });
+                const refresh = await sendAndReceive(socket, { t: "updateAuth", jwt: token });
+                expect(refresh).toMatchObject({ t: "mustRefetch", reason: "authChanged" });
+                const result = await sendAndReceive(socket, {
+                    t: "mut",
+                    mutId: MutId(`clock-${kind}`),
+                    ref: mutationRef,
+                    args: { id: `clock-${kind}`, organizationId: "workerd-org", body: "clock", createdAt: 8 },
+                });
+                expect(result).toMatchObject({
+                    t: "poke",
+                    mutResults: [{ ok: true, result: { userId: "workerd-user" } }],
+                });
+            } finally {
+                socket.close();
+            }
+        }
+    );
 
     test("malformed, tampered, expired, wrong-issuer, and wrong-audience tokens receive a terminal error and no welcome", async () => {
         const now = Math.floor(Date.now() / 1000);
