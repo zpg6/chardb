@@ -10,6 +10,7 @@ import * as React from "react";
 import * as TestRenderer from "react-test-renderer";
 import type { ChardbClient } from "../src/client/index.ts";
 import { fileRef } from "../src/files/index.ts";
+import type { MutationHandle, QueryHandle, QueryRow, WireResult } from "../src/handles.ts";
 import * as ChardbReact from "../src/react/index.ts";
 import {
     type ChardbProviderProps,
@@ -19,6 +20,7 @@ import {
     useQuery,
 } from "../src/react/index.ts";
 import { PROTOCOL_V, type RawJson } from "../src/wire.ts";
+import { mutationHandle } from "./helpers/handles.ts";
 
 type TestSubState = "pending" | "live" | "refetching" | "error" | "closed";
 
@@ -27,6 +29,7 @@ function ChardbProvider(props: React.PropsWithChildren<Omit<ChardbProviderProps,
 }
 
 interface SubInstance {
+    readonly handle: QueryHandle<never, unknown>;
     readonly ref: string;
     readonly args: RawJson;
     readonly listener: (rows: RawJson[], state?: TestSubState) => void;
@@ -62,14 +65,19 @@ class ProviderWebSocket {
 
 function stubClient() {
     const subs: SubInstance[] = [];
-    const mutateCalls: { ref: string; args: RawJson }[] = [];
+    const mutateCalls: { handle: MutationHandle<never, unknown>; args: RawJson }[] = [];
     const lifecycle = { closeCalls: 0 };
     const client: ChardbClient = {
-        subscribe<TRow>(ref: string, args: RawJson, onChange: (rows: TRow[], state: TestSubState) => void) {
+        subscribe<TArgs extends RawJson, TResult>(
+            handle: QueryHandle<TArgs, TResult>,
+            args: TArgs,
+            onChange: (rows: QueryRow<TResult>[], state: TestSubState) => void
+        ) {
             const inst: SubInstance = {
-                ref,
+                handle,
+                ref: handle.__chardbRef.toString(),
                 args,
-                listener: (rows, state = "live") => onChange(rows as TRow[], state),
+                listener: (rows, state = "live") => onChange(rows as QueryRow<TResult>[], state),
                 unsubscribed: false,
             };
             subs.push(inst);
@@ -79,9 +87,12 @@ function stubClient() {
                 },
             };
         },
-        async mutate<TResult>(ref: string, args: RawJson): Promise<TResult> {
-            mutateCalls.push({ ref, args });
-            return { ok: true } as unknown as TResult;
+        async mutate<TArgs extends RawJson, TResult>(
+            handle: MutationHandle<TArgs, TResult>,
+            args: TArgs
+        ): Promise<WireResult<TResult>> {
+            mutateCalls.push({ handle, args });
+            return { ok: true } as WireResult<TResult>;
         },
         close() {
             lifecycle.closeCalls += 1;
@@ -248,7 +259,7 @@ describe("@chardb/react — hook lifecycle", () => {
         expect(sdk.auth).toBe(session.auth);
         const query = Object.assign(
             async (_ctx: never, _args: { organizationId: string; limit: number }) => [{ id: "unused" }],
-            { __chardbRef: { toString: () => "src/queries.ts#listMessages" } }
+            { __chardbKind: "query" as const, __chardbRef: { toString: () => "src/queries.ts#listMessages" } }
         );
         let result: ChardbReact.UseQueryResult<{ id: string }> | undefined;
         function Probe() {
@@ -492,6 +503,7 @@ describe("@chardb/react — hook lifecycle", () => {
     test("useQuery subscribes on mount, receives patches, unsubscribes on unmount", () => {
         const { client, subs, lifecycle } = stubClient();
         const query = Object.assign(async (_ctx: never, _args: { organizationId: string }) => [{ id: "unused" }], {
+            __chardbKind: "query" as const,
             __chardbRef: { toString: () => "queries.ts#listMessages" },
         });
         const args = { organizationId: "org-1" };
@@ -512,6 +524,7 @@ describe("@chardb/react — hook lifecycle", () => {
         const sub = subs[0];
         if (!sub) throw new Error("expected useQuery to create a subscription");
         expect(sub.ref).toBe("queries.ts#listMessages");
+        expect(sub.handle).toBe(query);
         expect(sub.args).toEqual(args);
         expect(captured).toBeUndefined();
 
@@ -531,6 +544,7 @@ describe("@chardb/react — hook lifecycle", () => {
     test("useQuery distinguishes live empty rows from refetching, error, and closed state", () => {
         const { client, subs } = stubClient();
         const query = Object.assign(async (_ctx: never, _args: Record<string, never>) => [], {
+            __chardbKind: "query" as const,
             __chardbRef: { toString: () => "queries.ts#stateful" },
         });
         let captured: ReturnType<typeof useQuery<typeof query>> | undefined;
@@ -562,21 +576,26 @@ describe("@chardb/react — hook lifecycle", () => {
         let listener: ((rows: RawJson[]) => void) | undefined;
         let unsubscribed = false;
         const client: ChardbClient = {
-            subscribe<TRow>(_ref: string, _args: RawJson, onChange: (rows: TRow[]) => void) {
-                listener = rows => onChange(rows as TRow[]);
+            subscribe<TArgs extends RawJson, TResult>(
+                _handle: QueryHandle<TArgs, TResult>,
+                _args: TArgs,
+                onChange: (rows: QueryRow<TResult>[]) => void
+            ) {
+                listener = rows => onChange(rows as QueryRow<TResult>[]);
                 return {
                     unsubscribe() {
                         unsubscribed = true;
                     },
                 };
             },
-            async mutate<TResult>(): Promise<TResult> {
-                return null as TResult;
+            async mutate<TResult>(): Promise<WireResult<TResult>> {
+                return null as WireResult<TResult>;
             },
             close() {},
             state: "open",
         };
         const query = Object.assign(async (_ctx: never, _args: Record<string, never>) => [], {
+            __chardbKind: "query" as const,
             __chardbRef: { toString: () => "queries.ts#legacy" },
         });
         let captured: ReturnType<typeof useQuery<typeof query>> | undefined;
@@ -601,6 +620,7 @@ describe("@chardb/react — hook lifecycle", () => {
         const first = stubClient();
         const second = stubClient();
         const query = Object.assign(async (_ctx: never, _args: Record<string, never>) => [], {
+            __chardbKind: "query" as const,
             __chardbRef: { toString: () => "queries.ts#replacement" },
         });
 
@@ -684,6 +704,7 @@ describe("@chardb/react — hook lifecycle", () => {
         const firstAuth = sessionAuth("user-a", "unused-a");
         const secondAuth = sessionAuth("user-b", "unused-b");
         const query = Object.assign(async (_ctx: never, _args: Record<string, never>) => [], {
+            __chardbKind: "query" as const,
             __chardbRef: { toString: () => "queries.ts#auth-context" },
         });
         let getJwtCalls = 0;
@@ -725,7 +746,7 @@ describe("@chardb/react — hook lifecycle", () => {
             const socket = ProviderWebSocket.instances[0];
             if (!socket) throw new Error("expected the provider-owned socket");
             let mutationSettled = false;
-            mutationOutcome = originalClient.mutate("mutations.ts#auth-context", {}).then(
+            mutationOutcome = originalClient.mutate(mutationHandle("mutations.ts#auth-context"), {}).then(
                 value => {
                     mutationSettled = true;
                     return { ok: true as const, value };
@@ -854,6 +875,7 @@ describe("@chardb/react — hook lifecycle", () => {
         (globalThis as { WebSocket: unknown }).WebSocket = ProviderWebSocket;
         const session = mutableSessionAuth();
         const query = Object.assign(async (_ctx: never, _args: Record<string, never>) => [], {
+            __chardbKind: "query" as const,
             __chardbRef: { toString: () => "queries.ts#signed-out" },
         });
         let tree: TestRenderer.ReactTestRenderer | undefined;
@@ -1076,6 +1098,7 @@ describe("@chardb/react — hook lifecycle", () => {
         const session = mutableSessionAuth();
         session.setUser("user-a", "session-a");
         const query = Object.assign(async (_ctx: never, _args: { organizationId: string }) => [], {
+            __chardbKind: "query" as const,
             __chardbRef: { toString: () => "queries.ts#delayed-organization" },
         });
         let tree: TestRenderer.ReactTestRenderer | undefined;
@@ -1181,12 +1204,15 @@ describe("@chardb/react — hook lifecycle", () => {
         const first = stubClient();
         const second = stubClient();
         type Query = ((ctx: never, args: { organizationId: string }) => Promise<never[]>) & {
+            readonly __chardbKind: "query";
             readonly __chardbRef: { toString(): string };
         };
         const firstQuery: Query = Object.assign(async (_ctx: never, _args: { organizationId: string }) => [], {
+            __chardbKind: "query" as const,
             __chardbRef: { toString: () => "queries.ts#first" },
         });
         const secondQuery: Query = Object.assign(async (_ctx: never, _args: { organizationId: string }) => [], {
+            __chardbKind: "query" as const,
             __chardbRef: { toString: () => "queries.ts#second" },
         });
         let captured: { readonly data: RawJson[] | undefined; readonly state: string } | undefined;
@@ -1245,6 +1271,7 @@ describe("@chardb/react — hook lifecycle", () => {
     test("useQuery keeps one subscription when inline args are recreated by a result render", () => {
         const { client, subs } = stubClient();
         const query = Object.assign(async (_ctx: never, _args: { a: number; b: number }) => [], {
+            __chardbKind: "query" as const,
             __chardbRef: { toString: () => "queries.ts#listMessages" },
         });
 
@@ -1273,6 +1300,7 @@ describe("@chardb/react — hook lifecycle", () => {
 
     test("useQuery rejects non-JSON argument shapes without invoking getters", () => {
         const query = Object.assign(async (_ctx: never, _args: RawJson) => [], {
+            __chardbKind: "query" as const,
             __chardbRef: { toString: () => "queries.ts#strictArguments" },
         });
         let getterRuns = 0;
@@ -1333,6 +1361,7 @@ describe("@chardb/react — hook lifecycle", () => {
     test("useQuery rejects a live argument change from zero to negative zero", () => {
         const { client, subs } = stubClient();
         const query = Object.assign(async (_ctx: never, _args: { value: number }) => [], {
+            __chardbKind: "query" as const,
             __chardbRef: { toString: () => "queries.ts#signedZero" },
         });
         let captured: RawJson[] | undefined;
@@ -1364,6 +1393,7 @@ describe("@chardb/react — hook lifecycle", () => {
 
     test("useQuery accepts the exact argument byte limit and rejects one value over it", () => {
         const query = Object.assign(async (_ctx: never, _args: { value: string }) => [], {
+            __chardbKind: "query" as const,
             __chardbRef: { toString: () => "queries.ts#argumentBytes" },
         });
         const exact = stubClient();
@@ -1403,6 +1433,7 @@ describe("@chardb/react — hook lifecycle", () => {
 
     test("useQuery accepts 99 empty container levels and rejects the 100th before subscribing", () => {
         const query = Object.assign(async (_ctx: never, _args: RawJson) => [], {
+            __chardbKind: "query" as const,
             __chardbRef: { toString: () => "queries.ts#argumentDepth" },
         });
         const exact = stubClient();
@@ -1440,9 +1471,9 @@ describe("@chardb/react — hook lifecycle", () => {
         expect(over.subs).toHaveLength(0);
     });
 
-    test("useMutation invokes client.mutate with the function's __chardbRef", async () => {
+    test("useMutation hands the client the same mutation handle it was given", async () => {
         const { client, mutateCalls } = stubClient();
-        const fn = { __chardbRef: { toString: () => "mutation#postMessage" } };
+        const fn = mutationHandle("mutation#postMessage");
 
         let invoke: ((args: RawJson) => Promise<RawJson>) | undefined;
         function Probe() {
@@ -1456,11 +1487,14 @@ describe("@chardb/react — hook lifecycle", () => {
         expect(typeof invoke).toBe("function");
         if (!invoke) throw new Error("expected useMutation to expose an invoke function");
         await invoke({ body: "hi" });
-        expect(mutateCalls).toEqual([{ ref: "mutation#postMessage", args: { body: "hi" } }]);
+        expect(mutateCalls).toHaveLength(1);
+        expect(mutateCalls[0]?.handle).toBe(fn);
+        expect(mutateCalls[0]?.args).toEqual({ body: "hi" });
     });
 
     test("useQuery without a Provider throws a clear error", () => {
         const query = Object.assign(async (_ctx: never, _args: Record<string, never>) => [], {
+            __chardbKind: "query" as const,
             __chardbRef: { toString: () => "queries.ts#list" },
         });
         function Bad() {

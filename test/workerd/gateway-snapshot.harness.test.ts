@@ -7,8 +7,9 @@ import { Miniflare } from "miniflare";
 import { disposeMiniflareBounded } from "../../scripts/miniflare-lifecycle.mjs";
 import { createChardbClient } from "../../src/client/index.ts";
 import { gatewayBucketName } from "../../src/server/gateway-bucket.ts";
-import { type ChardbRef, ClientId, Cookie, MutId, SubId } from "../../src/types.ts";
+import { type ChardbRef, ClientId, Cookie, MutId, type RawJson, SubId } from "../../src/types.ts";
 import { type Down, PROTOCOL_V, type Up, decodeWire, encodeWire } from "../../src/wire.ts";
+import { mutationHandle, queryHandle } from "../helpers/handles.ts";
 
 const HERE = path.dirname(new URL(import.meta.url).pathname);
 const ENTRY = path.join(HERE, "gateway-snapshot.entry.ts");
@@ -702,6 +703,7 @@ describe("Gateway snapshot delivery durability in real workerd", () => {
             throw new Error("snapshot SDK fixture was not initialized");
         const clientId = "snapshot-reconnect-01";
         const body = "snapshot-reconnect-proof";
+        const mutation = mutationHandle(mutationRef);
         const NativeWebSocket = globalThis.WebSocket;
         let dropNextAcknowledgement = false;
         let settleDroppedAcknowledgement: ((cookie: Cookie) => void) | undefined;
@@ -811,8 +813,8 @@ describe("Gateway snapshot delivery durability in real workerd", () => {
                 clientId,
                 getJwt: async () => jwt,
             });
-            subscription = client.subscribe<Record<string, unknown>>(
-                queryRef,
+            subscription = client.subscribe(
+                queryHandle<RawJson, Record<string, unknown>[]>(queryRef),
                 { organizationId: ORGANIZATION, body },
                 observer.listener
             );
@@ -823,7 +825,7 @@ describe("Gateway snapshot delivery durability in real workerd", () => {
                 "initial SDK snapshot"
             );
 
-            await client.mutate(mutationRef, {
+            await client.mutate(mutation, {
                 id: "snapshot-before-close-row",
                 organizationId: ORGANIZATION,
                 body,
@@ -888,7 +890,7 @@ describe("Gateway snapshot delivery durability in real workerd", () => {
             if (!replacementCurrentCookie) throw new Error("replacement did not receive its current snapshot");
             expect(replacement.lastSnapshotCookie).toBe(replacementCurrentCookie);
 
-            await client.mutate(mutationRef, {
+            await client.mutate(mutation, {
                 id: "snapshot-after-refetch-row",
                 organizationId: ORGANIZATION,
                 body,

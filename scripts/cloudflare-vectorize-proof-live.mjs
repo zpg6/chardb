@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 const SHA256 = /^[a-f0-9]{64}$/;
 const MAX_TIMEOUT_MS = 10 * 60_000;
 const QUERY_REF = "cloudflare-vectorize-proof/api.ts#searchVectorDocuments";
+const QUERY = Object.assign(() => {}, { __chardbKind: "query", __chardbRef: QUERY_REF });
 const CLIENT_SESSION_FAILURE_REASONS = new Set([
     "auth-refresh-read",
     "auth-refresh-invalid-token",
@@ -633,7 +634,7 @@ export async function openCloudflareVectorizeProofLiveSubscription(input, depend
                 }
             },
         });
-        subscription = client.subscribe(QUERY_REF, { organizationId, values: [...input.values], limit: 1 }, onChange);
+        subscription = client.subscribe(QUERY, { organizationId, values: [...input.values], limit: 1 }, onChange);
         await waitFor(
             () => baselineUpdateCount === 1 && acknowledgedCookieHashes.length >= 1 && client.state === "open",
             "initial live SDK snapshot"

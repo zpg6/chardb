@@ -1311,7 +1311,8 @@ async function proveLiveQuery(cwd, origin, token, organizationId, existingIds, n
         await new Promise((resolve, reject) => {
             const timeout = setTimeout(() => reject(new Error("generated live query timed out")), 15_000);
             let wrote = false;
-            const subscription = db.subscribe("messages#list", { organizationId }, (rows, state) => {
+            const list = Object.assign(() => {}, { __chardbKind: "query", __chardbRef: "messages#list" });
+            const subscription = db.subscribe(list, { organizationId }, (rows, state) => {
                 if (state !== "live") return;
                 const ids = rows.map(row => row.id).sort();
                 const before = [...existingIds].sort();

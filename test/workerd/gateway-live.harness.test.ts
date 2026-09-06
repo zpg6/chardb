@@ -8,6 +8,7 @@ import { type ChardbClient, createChardbClient } from "../../src/client/index.ts
 import { GATEWAY_BUCKET_COUNT, gatewayBucketName } from "../../src/server/gateway-bucket.ts";
 import { type ChardbRef, ClientId, MutId, type RawJson, SubId } from "../../src/types.ts";
 import { type Down, PROTOCOL_V, type Up, decodeWire, encodeWire } from "../../src/wire.ts";
+import { mutationHandle, queryHandle } from "../helpers/handles.ts";
 
 const HERE = path.dirname(new URL(import.meta.url).pathname);
 const ENTRY = path.join(HERE, "gateway-live.entry.ts");
@@ -551,6 +552,12 @@ async function expectNoDown(socket: WebSocket, waitMs = 100): Promise<void> {
 async function signed(subject: string): Promise<string> {
     if (!signToken) throw new Error("JWT signer is not initialized");
     return signToken(subject);
+}
+
+interface ScaleMutationResult {
+    readonly id: string;
+    readonly userId: string;
+    readonly tenantId: string | null;
 }
 
 interface ScaleRow {
@@ -2189,6 +2196,7 @@ describe("public durable live queries in real workerd", () => {
     test("one configured Gateway enforces the exact 256-registration boundary and readmits after release", async () => {
         if (!mf || !queryRef) throw new Error("live fixture was not initialized");
         const readRef = queryRef;
+        const readQuery = queryHandle<RawJson, ScaleRow[]>(readRef);
         const gatewayPrefix = "quota-shared";
         const collocatedClientIds = collocatedGatewayClientIds(gatewayPrefix, 6);
         const expectedClientIds = collocatedClientIds.slice(0, 4);
@@ -2244,8 +2252,8 @@ describe("public durable live queries in real workerd", () => {
                 clients.push({ clientId, client, subscriptions });
                 for (let index = 0; index < 64; index++) {
                     subscriptions.push(
-                        client.subscribe<ScaleRow>(
-                            readRef,
+                        client.subscribe(
+                            readQuery,
                             {
                                 organizationId: ORGANIZATION_A,
                                 body: `quota-${clientId}-${index.toString().padStart(2, "0")}`,
@@ -2309,8 +2317,8 @@ describe("public durable live queries in real workerd", () => {
                 subscriptions: replacementSubscriptions,
             });
             replacementSubscriptions.push(
-                replacementClient.subscribe<ScaleRow>(
-                    readRef,
+                replacementClient.subscribe(
+                    readQuery,
                     { organizationId: ORGANIZATION_A, body: "quota-replacement" },
                     () => {}
                 )
@@ -2363,6 +2371,8 @@ describe("public durable live queries in real workerd", () => {
             if (!mutationRef || !queryRef) throw new Error("live fixture refs were not seeded");
             const writeRef = mutationRef;
             const readRef = queryRef;
+            const writeMutation = mutationHandle<RawJson, ScaleMutationResult>(writeRef);
+            const readQuery = queryHandle<RawJson, ScaleRow[]>(readRef);
             const body = "sdk-scale-fanout-v1";
             const tenants = [
                 { label: "a", organizationId: ORGANIZATION_A, subject: "workerd-user" },
@@ -2388,8 +2398,8 @@ describe("public durable live queries in real workerd", () => {
                         const clientId = `bench-${tenant.label}-${index.toString().padStart(4, "0")}`;
                         const client = await createSdkClient(clientId, tenant.subject);
                         const observer = createQueryObserver();
-                        const subscription = client.subscribe<ScaleRow>(
-                            readRef,
+                        const subscription = client.subscribe(
+                            readQuery,
                             { organizationId: tenant.organizationId, body },
                             observer.listener
                         );
@@ -2436,11 +2446,7 @@ describe("public durable live queries in real workerd", () => {
                             const mutator = clients.find(entry => entry.organizationId === tenant.organizationId);
                             if (!mutator) throw new Error(`missing mutator for ${tenant.organizationId}`);
                             await inBatches(jobs.slice(start, end), SCALE_MUTATION_BATCH, async job => {
-                                const result = await mutator.client.mutate<{
-                                    readonly id: string;
-                                    readonly userId: string;
-                                    readonly tenantId: string | null;
-                                }>(writeRef, {
+                                const result = await mutator.client.mutate(writeMutation, {
                                     id: job.id,
                                     organizationId: tenant.organizationId,
                                     body,
@@ -2490,8 +2496,8 @@ describe("public durable live queries in real workerd", () => {
                         await cleanupSdkClient(entry.clientId, entry.client, entry.subscriptions);
                         const replacement = await createSdkClient(entry.clientId, entry.subject);
                         const observer = createQueryObserver();
-                        const subscription = replacement.subscribe<ScaleRow>(
-                            readRef,
+                        const subscription = replacement.subscribe(
+                            readQuery,
                             { organizationId: entry.organizationId, body },
                             observer.listener
                         );
@@ -2586,8 +2592,8 @@ describe("public durable live queries in real workerd", () => {
                 );
                 const responseLossObserver = createQueryObserver();
                 responseLossSubscriptions.push(
-                    responseLossClient.client.subscribe<ScaleRow>(
-                        readRef,
+                    responseLossClient.client.subscribe(
+                        readQuery,
                         { organizationId: ORGANIZATION_A, body: responseLossBody },
                         responseLossObserver.listener
                     )
@@ -2606,11 +2612,7 @@ describe("public durable live queries in real workerd", () => {
                     const id = `sdk-response-loss-${index.toString().padStart(5, "0")}`;
                     responseLossIds.push(id);
                     const loss = responseLossClient.armNextSuccessfulResult();
-                    const replayedMutation = responseLossClient.client.mutate<{
-                        readonly id: string;
-                        readonly userId: string;
-                        readonly tenantId: string | null;
-                    }>(writeRef, {
+                    const replayedMutation = responseLossClient.client.mutate(writeMutation, {
                         id,
                         organizationId: ORGANIZATION_A,
                         body: responseLossBody,
@@ -2728,6 +2730,8 @@ describe("public durable live queries in real workerd", () => {
             if (!mf || !mutationRef || !queryRef) throw new Error("live fixture was not initialized");
             const writeRef = mutationRef;
             const readRef = queryRef;
+            const writeMutation = mutationHandle<RawJson, ScaleMutationResult>(writeRef);
+            const readQuery = queryHandle<RawJson, ScaleRow[]>(readRef);
             const clientId = "bench-select-0001";
             const initialClient = await createSdkClientWithTrackedClose(clientId, "workerd-user");
             let client = initialClient.client;
@@ -2741,8 +2745,8 @@ describe("public durable live queries in real workerd", () => {
             try {
                 for (let index = 0; index < observers.length; index++) {
                     subscriptions.push(
-                        client.subscribe<ScaleRow>(
-                            readRef,
+                        client.subscribe(
+                            readQuery,
                             { organizationId: ORGANIZATION_A, body: bodies[index] as string },
                             (observers[index] as QueryObserver).listener
                         )
@@ -2790,8 +2794,8 @@ describe("public durable live queries in real workerd", () => {
                 observers = Array.from({ length: SCALE_SUBSCRIPTIONS }, () => createQueryObserver());
                 for (let index = 0; index < observers.length; index++) {
                     subscriptions.push(
-                        client.subscribe<ScaleRow>(
-                            readRef,
+                        client.subscribe(
+                            readQuery,
                             { organizationId: ORGANIZATION_A, body: bodies[index] as string },
                             (observers[index] as QueryObserver).listener
                         )
@@ -2838,11 +2842,7 @@ describe("public durable live queries in real workerd", () => {
                     }));
                     const writesStartedAt = performance.now();
                     await inBatches(jobs, SCALE_MUTATION_BATCH, async job => {
-                        const result = await client.mutate<{
-                            readonly id: string;
-                            readonly userId: string;
-                            readonly tenantId: string | null;
-                        }>(writeRef, {
+                        const result = await client.mutate(writeMutation, {
                             id: job.id,
                             organizationId: ORGANIZATION_A,
                             body: job.body,
