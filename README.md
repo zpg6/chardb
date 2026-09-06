@@ -1,6 +1,6 @@
 # CharDB
 
-An auth-native database for Cloudflare Workers.
+An auth-native database for Cloudflare Workers. Documentation: [docs.chardb.dev](https://docs.chardb.dev).
 
 CharDB turns a Better Auth user or organization into the ownership, authorization, and placement boundary for a sharded SQLite database. It runs on Durable Objects, uses Drizzle schemas and migrations, works through Wrangler and Miniflare, and gives browser clients typed queries, mutations, files, and live updates.
 
@@ -271,7 +271,7 @@ bunx @chardb/core backups restore \
     --from recovery-2026-09-01.json
 ```
 
-Restore verifies the manifest and topology, fences Catalog and every shard, and removes the current derived provider records before it restarts the Durable Objects at their bookmarks. The CLI advances large restores through signed, bounded turns. Rerunning the same restore after a lost response resumes the same operation. A different manifest cannot cross the existing fence. Cloudflare retains native Durable Object PITR history for 30 days. Native PITR is available in deployed Workers, not local Miniflare. Read [Plan ahead](docs/plan-ahead.mdx) before relying on recovery or adding production data.
+Restore verifies the manifest and topology, fences Catalog and every shard, and removes the current derived provider records before it restarts the Durable Objects at their bookmarks. The CLI advances large restores through signed, bounded turns. Rerunning the same restore after a lost response resumes the same operation. A different manifest cannot cross the existing fence. Cloudflare retains native Durable Object PITR history for 30 days. Native PITR is available in deployed Workers, not local Miniflare. Read [Plan ahead](https://docs.chardb.dev/plan-ahead) before relying on recovery or adding production data.
 
 ## Verify the package
 
