@@ -14,10 +14,10 @@ arguments and validates and decodes server output at runtime. A handle is one
 `&'static str`, has no allocation, and writes that string unchanged to protocol
 v3's `ref` field.
 
-`chardb api rust --out src/chardb_api.rs`, run in the app directory, writes
-those handles and their Serde types from the app itself. The declarations in
-this document show what the generated module contains; they are not typed by
-hand in practice.
+`chardb generate`, run in the app directory, writes those handles and their
+Serde types to the path `clients.rust` names on `chardb({...})`. The
+declarations in this document show what the generated module contains; they are
+not typed by hand in practice.
 
 ## Install
 

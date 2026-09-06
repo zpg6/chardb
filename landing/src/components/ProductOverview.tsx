@@ -183,7 +183,7 @@ function RustClientSnippet() {
     return (
         <code>
             {highlightCode(
-                `// bunx chardb api rust --out src/chardb_api.rs
+                `// bunx chardb generate
 mod chardb_api;
 
 use chardb_api::{ListMessagesArgs, LIST_MESSAGES};

@@ -33,6 +33,7 @@ const PACKAGE_TEMPLATE = (name: string, corePackage: string, reactPackage: strin
             engines: { bun: ">=1.2.22", node: ">=22" },
             scripts: {
                 typecheck: "tsc --noEmit && tsc --noEmit -p test/tsconfig.json",
+                generate: "chardb generate",
                 test: "bun scripts/test.mjs",
                 build: "bun scripts/build.mjs",
                 "build:web": "vite build",
@@ -415,6 +416,8 @@ Do not edit files under \`src/migrations\` after deployment. Change \`src/schema
 \`\`\`bash
 bunx @chardb/core migrations generate --name add_messages
 \`\`\`
+
+Set \`clients\` on \`chardb({...})\` in \`src/worker.ts\`, for example \`clients: { ts: "src/chardb_api.ts", rust: "src/chardb_api.rs" }\`, and \`bun run generate\` writes typed SDK modules for the registered queries and mutations. \`migrations generate\` refreshes them too. Run \`bun run generate --check\` in CI to fail on a stale module.
 
 For the first Cloudflare deploy, authenticate Wrangler, copy the environment template, and replace every placeholder:
 

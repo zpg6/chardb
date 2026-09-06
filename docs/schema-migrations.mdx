@@ -19,7 +19,7 @@ For example:
 editedAt: integer("edited_at"),
 ```
 
-The generator inspects the schema twice in separate Bun processes and rejects different output. It writes `src/migrations/v2.json`, `src/migrations/v2.ts`, and an updated `src/migrations.ts`, then verifies the complete digest chain. The TypeScript file contains both the immutable schema snapshot and the reviewed additive statements.
+The generator inspects the schema twice in separate Bun processes and rejects different output. It writes `src/migrations/v2.json`, `src/migrations/v2.ts`, and an updated `src/migrations.ts`, then verifies the complete digest chain and rewrites the client modules declared through `clients` on `chardb({...})`, as `chardb generate` does. The TypeScript file contains both the immutable schema snapshot and the reviewed additive statements.
 
 Never edit a migration after it has run in any shared environment. Generate a new version instead.
 

@@ -1,5 +1,5 @@
-//! `chardb api rust` output must compile against this crate and keep the wire shape.
-//! `test/cli/api_rust.test.ts` regenerates the fixture from the app it describes.
+//! `chardb generate` output must compile against this crate and keep the wire shape.
+//! `test/cli/generate.test.ts` regenerates the fixture from the app it describes.
 
 use std::collections::HashMap;
 
