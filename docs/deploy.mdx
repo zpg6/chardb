@@ -69,7 +69,7 @@ bunx @chardb/core backups restore --url https://your-worker.example.com --from r
 
 Cloudflare retains Durable Object PITR history for 30 days. CharDB keeps authoritative R2 file bodies without automatic expiry. During restore it clears CharDB's current live R2 keys and tracked Vectorize records in signed, bounded turns, restarts every Durable Object, eagerly rebuilds authoritative files, and requeues authoritative vectors. The same manifest resumes after an unknown result. CharDB does not provide automatic regional failover or a production SLA.
 
-Automatic resharding and range merging are unsupported.
+Shards split by size on their own; range merging is unsupported.
 
 For recovery, resharding, and availability limits, read [Plan ahead](/plan-ahead).
 
