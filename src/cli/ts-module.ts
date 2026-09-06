@@ -36,7 +36,8 @@ function exportName(name: string): string {
     const camel = words(name)
         .map((word, index) => (index === 0 ? word : word.replace(/^./u, first => first.toUpperCase())))
         .join("");
-    return `${/^\p{N}/u.test(camel) || camel === "" ? "_" : ""}${camel}${RESERVED.has(camel) ? "_" : ""}`;
+    if (camel === "") return "unnamed";
+    return `${/^\p{N}/u.test(camel) ? "_" : ""}${camel}${RESERVED.has(camel) ? "_" : ""}`;
 }
 /** Text placed in a doc comment: it must not close the comment or break the line. */
 const docText = (text: string): string => text.replaceAll(/[\p{Cc}\p{Cs}]/gu, "").replaceAll("*/", "*\\/");
@@ -50,10 +51,21 @@ class Generator {
     private readonly kinds = new Set<string>();
     private raw = false;
 
-    handle({ name, ref, kind }: ApiHandle, args: string, result: string): void {
+    /** Export identifiers: names that already are identifiers keep them; the rest are derived, then made unique. */
+    identifiers(handles: readonly ApiHandle[]): Map<ApiHandle, string> {
+        const idents = new Map<ApiHandle, string>();
+        for (const handle of handles) {
+            if (exportName(handle.name) === handle.name) idents.set(handle, unique(this.consts, handle.name));
+        }
+        for (const handle of handles) {
+            if (!idents.has(handle)) idents.set(handle, unique(this.consts, exportName(handle.name)));
+        }
+        return idents;
+    }
+
+    handle({ ref, kind }: ApiHandle, ident: string, args: string, result: string): void {
         const alias = `${kind === "query" ? "Query" : "Mutation"}Handle`;
         this.kinds.add(alias);
-        const ident = unique(this.consts, exportName(name));
         const head = `export const ${ident} = handle(${JSON.stringify(kind)}, ${JSON.stringify(ref)})`;
         const line = `${head} as ${alias}<${args}, ${result}>;`;
         // The two break shapes biome chooses once the line overflows: type arguments first, then call arguments.
@@ -100,9 +112,11 @@ class Generator {
         if (properties.length === 0) return "Record<string, never>";
         const required = new Set(Array.isArray(schema.required) ? (schema.required as string[]) : []);
         const inner = `${indent}    `;
-        const body = properties.map(
-            ([key, property]) =>
-                `${inner}${propertyKey(key)}${required.has(key) ? "" : "?"}: ${this.typeOf(property, inner)};\n`
+        // Validators accept an explicit undefined for an optional key, so under exactOptionalPropertyTypes the type must too.
+        const body = properties.map(([key, property]) =>
+            required.has(key)
+                ? `${inner}${propertyKey(key)}: ${this.typeOf(property, inner)};\n`
+                : `${inner}${propertyKey(key)}?: ${this.typeOf(property, inner)} | undefined;\n`
         );
         return `{\n${body.join("")}${indent}}`;
     }
@@ -155,6 +169,7 @@ class Generator {
 
 export function renderTsModule(handles: readonly ApiHandle[]): string {
     const generator = new Generator();
+    const idents = generator.identifiers(handles);
     for (const handle of handles) {
         const args = generator.argsType(handle.name, handle.argsSchema);
         const result =
@@ -163,7 +178,7 @@ export function renderTsModule(handles: readonly ApiHandle[]): string {
                 : handle.row
                   ? `${generator.rowType(handle.row)}[]`
                   : generator.rawJson();
-        generator.handle(handle, args, result);
+        generator.handle(handle, idents.get(handle) ?? exportName(handle.name), args, result);
     }
     return generator.finish();
 }

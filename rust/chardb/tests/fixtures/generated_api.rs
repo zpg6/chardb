@@ -18,7 +18,7 @@ pub struct MessagesRow {
     pub meta: Option<::serde_json::Value>,
 }
 
-/// `kind` of [`ListMessagesArgs`].
+/// `kind` of `ListMessagesArgs`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum ListMessagesArgsKind {
     #[serde(rename = "all")]
@@ -27,7 +27,7 @@ pub enum ListMessagesArgsKind {
     Pinned,
 }
 
-/// `scope` of [`ListMessagesArgs`].
+/// `scope` of `ListMessagesArgs`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum ListMessagesArgsScope {
     #[serde(rename = "self")]

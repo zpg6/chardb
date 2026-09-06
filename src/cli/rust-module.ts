@@ -138,7 +138,7 @@ class Generator {
                 return `Vec<${this.typeOf(owner, key, node.items)}>`;
             case "object":
                 if (node.properties)
-                    return this.objectStruct(`${owner}${pascal(key)}`, node, `\`${docText(key)}\` of [\`${owner}\`].`);
+                    return this.objectStruct(`${owner}${pascal(key)}`, node, `\`${docText(key)}\` of \`${owner}\`.`);
                 // A map with typed values (`z.record`); an open object stays a Value.
                 return typeof node.additionalProperties === "object" && node.additionalProperties !== null
                     ? `::std::collections::HashMap<String, ${this.typeOf(owner, key, node.additionalProperties)}>`
@@ -155,7 +155,7 @@ class Generator {
         const body = values
             .map(value => `    #[serde(rename = ${rustString(value)})]\n    ${unique(variants, pascal(value))},\n`)
             .join("");
-        this.items += `/// \`${docText(key)}\` of [\`${owner}\`].\n#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]\npub enum ${name} {\n${body}}\n\n`;
+        this.items += `/// \`${docText(key)}\` of \`${owner}\`.\n#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]\npub enum ${name} {\n${body}}\n\n`;
         return name;
     }
 

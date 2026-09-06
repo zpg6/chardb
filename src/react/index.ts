@@ -421,6 +421,9 @@ export function useQuery<F extends (...args: never[]) => Promise<unknown>>(
 ): UseQueryResult<RowOf<F>> {
     const client = useChardb();
     const ref = handleRef(handle, "query");
+    // The subscription keys on the ref, not the handle object, so an inline handle does not resubscribe per render.
+    const latest = useRef(handle);
+    latest.current = handle;
     const enabled = options.enabled ?? true;
     const ownedArgs = enabled ? snapshotSubscriptionArguments(args as RawJson) : ({} as RawJson);
     const argsIdentity = enabled ? stableJson(ownedArgs) : "disabled";
@@ -443,7 +446,7 @@ export function useQuery<F extends (...args: never[]) => Promise<unknown>>(
         let active = true;
         setSnapshot(current => (current?.identity === identity ? current : undefined));
         const sub = client.subscribe(
-            handle as unknown as QueryHandle<RawJson, RowOf<F>[]>,
+            latest.current as unknown as QueryHandle<RawJson, RowOf<F>[]>,
             stableArgs,
             (rows, state) => {
                 if (active) setSnapshot({ identity, data: rows, state: state ?? "live" });
@@ -453,7 +456,7 @@ export function useQuery<F extends (...args: never[]) => Promise<unknown>>(
             active = false;
             sub.unsubscribe();
         };
-    }, [client, enabled, handle, identity, stableArgs]);
+    }, [client, enabled, identity, stableArgs]);
     const data = snapshot?.identity === identity ? snapshot.data : undefined;
     const state = enabled ? (snapshot?.identity === identity ? snapshot.state : "pending") : "idle";
     return { data, state };
@@ -464,12 +467,10 @@ export interface MutationFnLike {
     readonly __chardbRef: { toString(): string };
 }
 
-export function useMutation<TArgs extends RawJson, TResult>(
+export function useMutation<TArgs, TResult>(
     fn: ((ctx: never, args: TArgs) => TResult) & MutationFnLike
 ): (args: TArgs) => Promise<WireResult<TResult>>;
-export function useMutation<TArgs extends RawJson = RawJson, TResult = RawJson>(
-    fn: MutationFnLike
-): (args: TArgs) => Promise<TResult>;
+export function useMutation<TArgs = RawJson, TResult = RawJson>(fn: MutationFnLike): (args: TArgs) => Promise<TResult>;
 export function useMutation(fn: MutationFnLike): (...args: never[]) => Promise<unknown> {
     const client = useChardb();
     return useCallback(
@@ -523,7 +524,7 @@ interface ChardbReactClientBase<M extends ChardbOwnership, A extends AuthClientL
         handle: ((ctx: never, args: TArgs) => Promise<TResult>) & QueryHandleStamp<TArgs>,
         args: PublicArgs<M, TArgs>
     ) => UseQueryResult<QueryRow<TResult>>;
-    readonly useMutation: <TArgs extends RawJson & OwnershipArgs<M>, TResult>(
+    readonly useMutation: <TArgs extends OwnershipArgs<M>, TResult>(
         fn: ((ctx: never, args: TArgs) => TResult) & MutationFnLike
     ) => (args: PublicArgs<M, TArgs>) => Promise<WireResult<TResult>>;
 }
@@ -582,7 +583,7 @@ export function createChardbReactClient<const M extends ChardbOwnership, const A
         return useQuery(handle, scopedArgs as TArgs, { enabled: scopeId !== null });
     };
 
-    const useOwnedMutation = <TArgs extends RawJson & OwnershipArgs<M>, TResult>(
+    const useOwnedMutation = <TArgs extends OwnershipArgs<M>, TResult>(
         fn: ((ctx: never, args: TArgs) => TResult) & MutationFnLike
     ): ((args: PublicArgs<M, TArgs>) => Promise<WireResult<TResult>>) => {
         const identity = useIdentity();

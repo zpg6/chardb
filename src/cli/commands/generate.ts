@@ -37,6 +37,17 @@ function isGeneratedApp(value: unknown): value is GeneratedApp {
     );
 }
 
+/** A declared module path: a relative source file with the language's extension. */
+function modulePath(language: keyof ChardbClients, path: unknown, extension: string): string {
+    const where = `clients.${language}`;
+    if (typeof path !== "string") throw new Error(`${where} must be a string path`);
+    if (isAbsolute(path) || /[\\/]$/.test(path)) throw new Error(`${where} must be a relative file path: ${path}`);
+    if (extname(path) !== extension || path.endsWith(`.d${extension}`)) {
+        throw new Error(`${where} must be a source module ending in ${extension}: ${path}`);
+    }
+    return path;
+}
+
 /** Render every configured client module and write the ones whose bytes changed. */
 export async function generateClients(app: GeneratedApp, ctx: CliContext, check: boolean): Promise<void> {
     const targets: {
@@ -48,9 +59,7 @@ export async function generateClients(app: GeneratedApp, ctx: CliContext, check:
         const path = app.clients?.[language];
         if (path === undefined) continue;
         const { extension, header, render } = LANGUAGES[language];
-        if (isAbsolute(path)) throw new Error(`clients.${language} must be relative to the project root: ${path}`);
-        if (extname(path) !== extension) throw new Error(`clients.${language} must end in ${extension}: ${path}`);
-        targets.push({ path, header, render });
+        targets.push({ path: modulePath(language, path, extension), header, render });
     }
     if (targets.length === 0) {
         ctx.stdout("chardb: no clients configured\n");

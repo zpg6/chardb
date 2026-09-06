@@ -145,17 +145,16 @@ describe("chardb generate", () => {
         expect(project.files.get("/project/src/api.ts")).toBe("// hand written");
     });
 
-    test("rejects absolute paths and foreign extensions, and reports a project without clients", async () => {
+    test("rejects paths that are not relative source modules, and reports a project without clients", async () => {
         const project = fakeProject({ exitCode: 0, stdout: "", stderr: "" });
-        await expect(generateClients(app({ rust: "/tmp/api.rs" }), project.ctx, false)).rejects.toThrow(
-            "clients.rust must be relative to the project root: /tmp/api.rs"
-        );
-        await expect(generateClients(app({ ts: "src/api.js" }), project.ctx, false)).rejects.toThrow(
-            "clients.ts must end in .ts: src/api.js"
-        );
-        await expect(generateClients(app({ rust: "src/api.ts" }), project.ctx, false)).rejects.toThrow(
-            "clients.rust must end in .rs: src/api.ts"
-        );
+        const rejects = (clients: GeneratedApp["clients"], message: string) =>
+            expect(generateClients(app(clients), project.ctx, false)).rejects.toThrow(message);
+        await rejects({ rust: "/tmp/api.rs" }, "clients.rust must be a relative file path: /tmp/api.rs");
+        await rejects({ ts: "src/api.ts/" }, "clients.ts must be a relative file path: src/api.ts/");
+        await rejects({ ts: "src/api.js" }, "clients.ts must be a source module ending in .ts: src/api.js");
+        await rejects({ ts: "src/api.d.ts" }, "clients.ts must be a source module ending in .ts: src/api.d.ts");
+        await rejects({ rust: "src/api.ts" }, "clients.rust must be a source module ending in .rs: src/api.ts");
+        await rejects({ ts: 5 as never }, "clients.ts must be a string path");
         expect(project.files.size).toBe(1);
         expect(project.output).toEqual([]);
 
@@ -195,13 +194,25 @@ describe("chardb generate", () => {
                             organization_id: z.string(),
                             status: z.enum(["in_progress", "In Progress", "self"]),
                             when: z.date().optional(),
+                            "form\ffeed": z.string(),
                         })
                     ),
                     list_messages: mutation("m#b"),
+                    scope: mutation("m#scope", z.enum(["all", "mine"]) as never),
                 },
                 {}
             )
         );
+        expect(rendered).toContain('#[serde(rename = "form\\u{c}feed")]\n    pub form_feed: String,');
+        expect(rendered).toContain("/// `status` of `ListMessagesArgs`.\n");
+        expect(rendered).toContain(
+            "/// `Args` of `Scope`.\n#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]\npub enum ScopeArgs {"
+        );
+        expect(rendered).not.toContain("[`");
+        const shared = mutation("m#shared");
+        const aliased = renderRustModule(collectApiHandles({ userNotes: shared, alias: shared }, {}));
+        expect(aliased).toContain("pub const ALIAS:");
+        expect(aliased).toContain("pub const USER_NOTES:");
         expect(rendered).toContain('#[serde(rename = "organizationId")]\n    pub organization_id: String,');
         expect(rendered).toContain('#[serde(rename = "organization_id")]\n    pub organization_id_2: String,');
         expect(rendered).toContain("    InProgress,\n");
@@ -238,6 +249,8 @@ describe("chardb generate", () => {
                     "1st": mutation("m#f"),
                     RawJson: mutation("m#g"),
                     eval: mutation("m#h"),
+                    "": mutation("m#empty"),
+                    empty: mutation("m#i", z.object({ nothing: z.object({}) })),
                     aVeryLongExportNameThatPushesTheDeclarationPastTheLineWidth: mutation(
                         `src/${"deeply/".repeat(8)}module.ts#aVeryLongExportNameThatPushesTheDeclarationPastTheLineWidth`
                     ),
@@ -247,8 +260,10 @@ describe("chardb generate", () => {
         );
         expect(rendered).toContain('import type { MutationHandle, RawJson } from "@chardb/core";');
         expect(rendered).toContain('    "in-progress": "in_progress" | "self";\n');
-        expect(rendered).toContain("    when?: RawJson;\n");
-        expect(rendered).toContain("    note?: string | null;\n");
+        expect(rendered).toContain("    when?: RawJson | undefined;\n");
+        expect(rendered).toContain("    note?: string | null | undefined;\n");
+        expect(rendered).toContain("    nothing: Record<string, never>;\n");
+        expect(rendered).toContain('export const unnamed = handle("mutation", "m#empty")');
         expect(rendered).toContain("    tags: (string | null)[];\n");
         expect(rendered).toContain("    filters: { [key: string]: number };\n");
         expect(rendered).toContain('    nested: {\n        deep: "x";\n        count: number;\n    };\n');
@@ -260,8 +275,8 @@ describe("chardb generate", () => {
             'export const delete_ = handle("mutation", "m#b") as MutationHandle<{ [key: string]: RawJson }, RawJson>;'
         );
         expect(rendered).toContain('export const handle_2 = handle("mutation", "m#c")');
-        expect(rendered).toContain('export const listMessages = handle("mutation", "m#e")');
-        expect(rendered).toContain('export const listMessages_2 = handle("mutation", "m#a")');
+        expect(rendered).toContain('export const listMessages = handle("mutation", "m#a")');
+        expect(rendered).toContain('export const listMessages_2 = handle("mutation", "m#e")');
         expect(rendered).toContain('export const _1st = handle("mutation", "m#f")');
         expect(rendered).toContain('export const RawJson_2 = handle("mutation", "m#g")');
         expect(rendered).toContain('export const eval_ = handle("mutation", "m#h")');

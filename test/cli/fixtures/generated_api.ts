@@ -15,10 +15,10 @@ export type MessagesRow = {
 /** Arguments for `listMessages`. */
 export type ListMessagesArgs = {
     organizationId: string;
-    limit?: number;
-    kind?: "all" | "pinned";
-    scope?: "self" | "team";
-    filters?: { [key: string]: string };
+    limit?: number | undefined;
+    kind?: "all" | "pinned" | undefined;
+    scope?: "self" | "team" | undefined;
+    filters?: { [key: string]: string } | undefined;
 };
 
 /** Arguments for `postMessage`. */
@@ -27,14 +27,14 @@ export type PostMessageArgs = {
     organizationId: string;
     body: string;
     type: string | null;
-    tags?: string[];
-    dueAt?: string | null;
+    tags?: string[] | undefined;
+    dueAt?: string | null | undefined;
 };
 
 /** Arguments for `taggedMessages`. */
 export type TaggedMessagesArgs = {
-    organizationId?: string;
-    ids?: string[];
+    organizationId?: string | undefined;
+    ids?: string[] | undefined;
 };
 
 const handle = (kind: string, ref: string): unknown =>

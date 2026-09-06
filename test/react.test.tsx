@@ -68,7 +68,7 @@ function stubClient() {
     const mutateCalls: { handle: MutationHandle<never, unknown>; args: RawJson }[] = [];
     const lifecycle = { closeCalls: 0 };
     const client: ChardbClient = {
-        subscribe<TArgs extends RawJson, TResult>(
+        subscribe<TArgs, TResult>(
             handle: QueryHandle<TArgs, TResult>,
             args: TArgs,
             onChange: (rows: QueryRow<TResult>[], state: TestSubState) => void
@@ -76,7 +76,7 @@ function stubClient() {
             const inst: SubInstance = {
                 handle,
                 ref: handle.__chardbRef.toString(),
-                args,
+                args: args as RawJson,
                 listener: (rows, state = "live") => onChange(rows as QueryRow<TResult>[], state),
                 unsubscribed: false,
             };
@@ -87,11 +87,11 @@ function stubClient() {
                 },
             };
         },
-        async mutate<TArgs extends RawJson, TResult>(
+        async mutate<TArgs, TResult>(
             handle: MutationHandle<TArgs, TResult>,
             args: TArgs
         ): Promise<WireResult<TResult>> {
-            mutateCalls.push({ handle, args });
+            mutateCalls.push({ handle, args: args as RawJson });
             return { ok: true } as WireResult<TResult>;
         },
         close() {
@@ -576,7 +576,7 @@ describe("@chardb/react — hook lifecycle", () => {
         let listener: ((rows: RawJson[]) => void) | undefined;
         let unsubscribed = false;
         const client: ChardbClient = {
-            subscribe<TArgs extends RawJson, TResult>(
+            subscribe<TArgs, TResult>(
                 _handle: QueryHandle<TArgs, TResult>,
                 _args: TArgs,
                 onChange: (rows: QueryRow<TResult>[]) => void

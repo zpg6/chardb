@@ -118,7 +118,7 @@ function rowOf(ref: string, plan: RegisteredQueryPlan, schema: Record<string, un
     };
 }
 
-/** Describe every registered handle once, sorted by export name. */
+/** Describe every registered handle, sorted by export name; a handle exported under two names appears twice. */
 export function collectApiHandles(
     refs: Readonly<Record<string, unknown>>,
     schema: Record<string, unknown>
@@ -131,8 +131,7 @@ export function collectApiHandles(
     for (const [name, handle] of entries) {
         const ref = handle.__chardbRef;
         const previous = seen.get(ref);
-        if (previous === handle) continue;
-        if (previous) throw new Error(`${ref}: registered by two different handles`);
+        if (previous && previous !== handle) throw new Error(`${ref}: registered by two different handles`);
         seen.set(ref, handle);
         const argsSchema = jsonSchemaOf(ref, handle.__chardbArgs);
         const plan =

@@ -148,16 +148,13 @@ function decodeJwtRefreshClaims(jwt: string): JwtRefreshClaims | null {
 
 export interface ChardbClient {
     /** Open a live subscription; returns a disposer. */
-    subscribe<TArgs extends RawJson, TResult>(
+    subscribe<TArgs, TResult>(
         handle: QueryHandle<TArgs, TResult>,
         args: NoInfer<TArgs>,
         onChange: (rows: QueryRow<TResult>[], state?: SubState) => void
     ): { unsubscribe: () => void };
     /** Issue a mutation; resolves with server result after canonical state arrives. */
-    mutate<TArgs extends RawJson, TResult>(
-        handle: MutationHandle<TArgs, TResult>,
-        args: NoInfer<TArgs>
-    ): Promise<WireResult<TResult>>;
+    mutate<TArgs, TResult>(handle: MutationHandle<TArgs, TResult>, args: NoInfer<TArgs>): Promise<WireResult<TResult>>;
     close(): void;
     /** Current connection liveness (for diagnostics). */
     readonly state: "connecting" | "open" | "reconnecting" | "closed";
@@ -946,7 +943,7 @@ export function createDeferredChardbClientController(
         }
     }
 
-    function subscribe<TArgs extends RawJson, TResult>(
+    function subscribe<TArgs, TResult>(
         handle: QueryHandle<TArgs, TResult>,
         args: NoInfer<TArgs>,
         onChange: (rows: QueryRow<TResult>[], state?: SubState) => void
@@ -958,7 +955,7 @@ export function createDeferredChardbClientController(
             });
         }
         const queryRef = handleRef(handle, "query");
-        const ownedArgs = snapshotSubscriptionArguments(args);
+        const ownedArgs = snapshotSubscriptionArguments(args as RawJson);
         if (subs.size >= MAX_ACTIVE_SUBSCRIPTIONS) {
             throw new CdbError({
                 code: "CDB_RATE_LIMITED",
@@ -1021,7 +1018,7 @@ export function createDeferredChardbClientController(
         };
     }
 
-    function mutate<TArgs extends RawJson, TResult>(
+    function mutate<TArgs, TResult>(
         handle: MutationHandle<TArgs, TResult>,
         args: NoInfer<TArgs>
     ): Promise<WireResult<TResult>> {
@@ -1037,7 +1034,7 @@ export function createDeferredChardbClientController(
         let ownedArgs: RawJson;
         try {
             mutationRef = handleRef(handle, "mutation");
-            ownedArgs = snapshotMutationArguments(args);
+            ownedArgs = snapshotMutationArguments(args as RawJson);
         } catch (error) {
             return Promise.reject(error);
         }
