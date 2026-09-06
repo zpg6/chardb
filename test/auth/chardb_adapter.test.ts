@@ -954,6 +954,96 @@ describe("chardbAuthAdapter — Catalog-owned auth storage", () => {
         ).resolves.toBeNull();
     });
 
+    test("rejects repeated mutation fields instead of weakening an AND predicate", async () => {
+        const adapter = chardbAuthAdapter({ recoveryGeneration: 0, env: { CDB_CATALOG: namespaceFor(harness) } })(
+            auth.options
+        );
+        const now = new Date("2026-08-23T00:00:00Z");
+        for (const [id, identifier] of [
+            ["verification-a", "first@example.com"],
+            ["verification-b", "second@example.com"],
+        ] as const) {
+            await adapter.create({
+                model: "verification",
+                forceAllowId: true,
+                data: { id, identifier, value: id, expiresAt: now, createdAt: now, updatedAt: now },
+            });
+        }
+        harness.sqlStatements.length = 0;
+
+        const contradictory = [
+            { field: "identifier", value: "first@example.com", operator: "eq" as const },
+            { field: "identifier", value: "second@example.com", operator: "eq" as const },
+        ];
+        await expect(adapter.consumeOne({ model: "verification", where: contradictory })).rejects.toMatchObject({
+            code: "CDB_UNSUPPORTED_FEATURE",
+        });
+        await expect(adapter.deleteMany({ model: "verification", where: contradictory })).rejects.toMatchObject({
+            code: "CDB_UNSUPPORTED_FEATURE",
+        });
+        expect(harness.sqlStatements.some(statement => statement.startsWith('DELETE FROM "verification"'))).toBe(false);
+        await expect(adapter.count({ model: "verification", where: [] })).resolves.toBe(2);
+    });
+
+    test("maps renamed models and fields through every Catalog adapter operation", async () => {
+        harness.close();
+        resetAuthRuntime();
+        bindAuthRuntime({
+            schema: synthesizeAuthSchema(renamedRateLimitAuth.options as never) as never,
+            options: renamedRateLimitAuth.options as { readonly [key: string]: unknown },
+        });
+        harness = new CatalogHarness();
+        await harness.ready();
+        const adapter = chardbAuthAdapter({ recoveryGeneration: 0, env: { CDB_CATALOG: namespaceFor(harness) } })(
+            renamedRateLimitAuth.options
+        );
+
+        for (const row of [
+            { id: "renamed-a", key: "alpha", count: 1, lastRequest: 100 },
+            { id: "renamed-b", key: "beta", count: 2, lastRequest: 200 },
+        ]) {
+            await adapter.create({ model: "rateLimit", forceAllowId: true, data: row });
+        }
+        await expect(adapter.findOne({ model: "rateLimit", where: eq("key", "alpha") })).resolves.toMatchObject({
+            id: "renamed-a",
+            key: "alpha",
+            count: 1,
+            lastRequest: 100,
+        });
+        await expect(
+            adapter.findMany<Record<string, unknown>>({
+                model: "rateLimit",
+                where: [{ field: "count", operator: "gte", value: 1 }],
+                sortBy: { field: "count", direction: "desc" },
+            })
+        ).resolves.toEqual([
+            expect.objectContaining({ id: "renamed-b", count: 2 }),
+            expect.objectContaining({ id: "renamed-a", count: 1 }),
+        ]);
+        await expect(adapter.count({ model: "rateLimit", where: eq("count", 1) })).resolves.toBe(1);
+        await expect(
+            adapter.update({ model: "rateLimit", where: eq("key", "alpha"), update: { count: 3 } })
+        ).resolves.toMatchObject({ id: "renamed-a", key: "alpha", count: 3 });
+        await expect(
+            adapter.updateMany({ model: "rateLimit", where: eq("key", "beta"), update: { count: 4 } })
+        ).resolves.toBe(1);
+        await expect(adapter.consumeOne({ model: "rateLimit", where: eq("key", "alpha") })).resolves.toMatchObject({
+            id: "renamed-a",
+            count: 3,
+        });
+        await adapter.delete({ model: "rateLimit", where: eq("key", "beta") });
+        await expect(adapter.count({ model: "rateLimit", where: [] })).resolves.toBe(0);
+
+        for (const row of [
+            { id: "renamed-c", key: "cleanup-c", count: 5, lastRequest: 300 },
+            { id: "renamed-d", key: "cleanup-d", count: 5, lastRequest: 400 },
+        ]) {
+            await adapter.create({ model: "rateLimit", forceAllowId: true, data: row });
+        }
+        await expect(adapter.deleteMany({ model: "rateLimit", where: eq("count", 5) })).resolves.toBe(2);
+        await expect(adapter.findMany({ model: "rateLimit", where: [] })).resolves.toEqual([]);
+    });
+
     test("keeps empty single-row mutations as no-ops while bulk mutations remain explicit", async () => {
         const adapter = chardbAuthAdapter({ recoveryGeneration: 0, env: { CDB_CATALOG: namespaceFor(harness) } })(
             auth.options

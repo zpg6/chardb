@@ -100,6 +100,7 @@ export function chardbAuthAdapter(opts: ChardbAuthAdapterOptions): AdapterFactor
         adapter: ({ getFieldName, schema }) => {
             const canonicalModels = new Map<string, string>();
             const canonicalFields = new Map<string, ReadonlyMap<string, string>>();
+            const canonicalFieldNames = new Map<string, ReadonlySet<string>>();
             for (const [canonicalModel, modelSchema] of Object.entries(schema)) {
                 const physicalModel = modelSchema.modelName;
                 const existingModel = canonicalModels.get(physicalModel);
@@ -122,6 +123,7 @@ export function chardbAuthAdapter(opts: ChardbAuthAdapterOptions): AdapterFactor
                     fields.set(physicalField, canonicalField);
                 }
                 canonicalFields.set(canonicalModel, fields);
+                canonicalFieldNames.set(canonicalModel, new Set(["id", ...Object.keys(modelSchema.fields)]));
             }
 
             const canonicalModelFor = (physicalModel: string): string => {
@@ -144,74 +146,116 @@ export function chardbAuthAdapter(opts: ChardbAuthAdapterOptions): AdapterFactor
                 }
                 return canonicalField;
             };
+            const canonicalSortFieldFor = (canonicalModel: string, field: string): string => {
+                if (canonicalFieldNames.get(canonicalModel)?.has(field)) return field;
+                return canonicalFieldFor(canonicalModel, field);
+            };
+            const canonicalRecordFor = (
+                canonicalModel: string,
+                record: { readonly [k: string]: RawJson }
+            ): Record<string, RawJson> => {
+                const canonical: Record<string, RawJson> = {};
+                for (const [field, value] of Object.entries(record)) {
+                    defineDataProperty(canonical, canonicalFieldFor(canonicalModel, field), value);
+                }
+                return canonical;
+            };
+            const physicalRecordFor = (
+                canonicalModel: string,
+                record: Readonly<Record<string, RawJson>>
+            ): Record<string, RawJson> => {
+                const physical: Record<string, RawJson> = {};
+                for (const [field, value] of Object.entries(record)) {
+                    defineDataProperty(physical, getFieldName({ model: canonicalModel, field }), value);
+                }
+                return physical;
+            };
 
             return {
                 async create({ model, data }) {
-                    const payload = data as { [k: string]: RawJson };
+                    const defaultModel = canonicalModelFor(model);
+                    const payload = canonicalRecordFor(defaultModel, data as { [k: string]: RawJson });
                     const r = await callCatalog<CatalogAuthMutationResult>(catalog(), {
                         operation: "mutate",
-                        args: { model, op: "create", payload },
+                        args: { model: defaultModel, op: "create", payload },
                     });
-                    return (r.row ?? payload) as never;
+                    return physicalRecordFor(defaultModel, r.row ?? payload) as never;
                 },
 
                 async findOne({ model, where }) {
-                    const filters = whereToReadFilters(where);
+                    const defaultModel = canonicalModelFor(model);
+                    const defaultField = (field: string): string => canonicalFieldFor(defaultModel, field);
+                    const filters = whereToReadFilters(where, defaultField);
                     const rows = await callCatalog<readonly Record<string, RawJson>[]>(catalog(), {
                         operation: "query",
-                        args: { model, where: filters, limit: 1 },
+                        args: { model: defaultModel, where: filters, limit: 1 },
                     });
-                    return (rows[0] ?? null) as never;
+                    return (rows[0] ? physicalRecordFor(defaultModel, rows[0]) : null) as never;
                 },
 
                 async findMany({ model, where, limit, offset, sortBy }) {
-                    const filters = where ? whereToReadFilters(where) : [];
+                    const defaultModel = canonicalModelFor(model);
+                    const defaultField = (field: string): string => canonicalFieldFor(defaultModel, field);
+                    const filters = where ? whereToReadFilters(where, defaultField) : [];
                     const rows = await callCatalog<readonly Record<string, RawJson>[]>(catalog(), {
                         operation: "query",
                         args: {
-                            model,
+                            model: defaultModel,
                             where: filters,
                             limit: limit ?? 100,
                             ...(offset === undefined ? {} : { offset }),
-                            ...(sortBy === undefined ? {} : { sortBy }),
+                            ...(sortBy === undefined
+                                ? {}
+                                : {
+                                      sortBy: {
+                                          field: canonicalSortFieldFor(defaultModel, sortBy.field),
+                                          direction: sortBy.direction,
+                                      },
+                                  }),
                         },
                     });
-                    return rows as never;
+                    return rows.map(row => physicalRecordFor(defaultModel, row)) as never;
                 },
 
                 async count({ model, where }) {
-                    const filters = where ? whereToReadFilters(where) : [];
+                    const defaultModel = canonicalModelFor(model);
+                    const defaultField = (field: string): string => canonicalFieldFor(defaultModel, field);
+                    const filters = where ? whereToReadFilters(where, defaultField) : [];
                     return callCatalog<number>(catalog(), {
                         operation: "count",
-                        args: { model, where: filters },
+                        args: { model: defaultModel, where: filters },
                     });
                 },
 
                 async update({ model, where, update }) {
-                    const flat = whereToFlat(where);
+                    const defaultModel = canonicalModelFor(model);
+                    const defaultField = (field: string): string => canonicalFieldFor(defaultModel, field);
+                    const flat = whereToFlat(where, defaultField);
                     const r = await callCatalog<CatalogAuthMutationResult>(catalog(), {
                         operation: "mutate",
                         args: {
-                            model,
+                            model: defaultModel,
                             op: "update",
                             where: flat,
-                            payload: update as { [k: string]: RawJson },
+                            payload: canonicalRecordFor(defaultModel, update as { [k: string]: RawJson }),
                             returnRow: true,
                             limitOne: true,
                         },
                     });
-                    return (r.row ?? null) as never;
+                    return (r.row ? physicalRecordFor(defaultModel, r.row) : null) as never;
                 },
 
                 async updateMany({ model, where, update }) {
-                    const flat = whereToFlat(where);
+                    const defaultModel = canonicalModelFor(model);
+                    const defaultField = (field: string): string => canonicalFieldFor(defaultModel, field);
+                    const flat = whereToFlat(where, defaultField);
                     const r = await callCatalog<CatalogAuthMutationResult>(catalog(), {
                         operation: "mutate",
                         args: {
-                            model,
+                            model: defaultModel,
                             op: "update",
                             where: flat,
-                            payload: update as { [k: string]: RawJson },
+                            payload: canonicalRecordFor(defaultModel, update as { [k: string]: RawJson }),
                             returnRow: false,
                             limitOne: false,
                         },
@@ -220,29 +264,35 @@ export function chardbAuthAdapter(opts: ChardbAuthAdapterOptions): AdapterFactor
                 },
 
                 async delete({ model, where }) {
-                    const flat = whereToFlat(where);
+                    const defaultModel = canonicalModelFor(model);
+                    const defaultField = (field: string): string => canonicalFieldFor(defaultModel, field);
+                    const flat = whereToFlat(where, defaultField);
                     await callCatalog<CatalogAuthMutationResult>(catalog(), {
                         operation: "mutate",
-                        args: { model, op: "delete", where: flat, limitOne: true },
+                        args: { model: defaultModel, op: "delete", where: flat, limitOne: true },
                     });
                 },
 
                 async deleteMany({ model, where }) {
-                    const flat = whereToFlat(where);
+                    const defaultModel = canonicalModelFor(model);
+                    const defaultField = (field: string): string => canonicalFieldFor(defaultModel, field);
+                    const flat = whereToFlat(where, defaultField);
                     const r = await callCatalog<CatalogAuthMutationResult>(catalog(), {
                         operation: "mutate",
-                        args: { model, op: "delete", where: flat, limitOne: false },
+                        args: { model: defaultModel, op: "delete", where: flat, limitOne: false },
                     });
                     return r.affected ?? 0;
                 },
 
                 async consumeOne({ model, where }) {
-                    const flat = whereToFlat(where);
+                    const defaultModel = canonicalModelFor(model);
+                    const defaultField = (field: string): string => canonicalFieldFor(defaultModel, field);
+                    const flat = whereToFlat(where, defaultField);
                     const r = await callCatalog<CatalogAuthMutationResult>(catalog(), {
                         operation: "mutate",
-                        args: { model, op: "delete", where: flat, returnRow: true, limitOne: true },
+                        args: { model: defaultModel, op: "delete", where: flat, returnRow: true, limitOne: true },
                     });
-                    return (r.row ?? null) as never;
+                    return (r.row ? physicalRecordFor(defaultModel, r.row) : null) as never;
                 },
 
                 async incrementOne({ model, where, increment, set }) {
@@ -278,11 +328,7 @@ export function chardbAuthAdapter(opts: ChardbAuthAdapterOptions): AdapterFactor
                         },
                     });
                     if (!r.row) return null;
-                    const storageRow: Record<string, RawJson> = Object.create(null);
-                    for (const [field, value] of Object.entries(r.row)) {
-                        storageRow[getFieldName({ model: defaultModel, field })] = value;
-                    }
-                    return storageRow as never;
+                    return physicalRecordFor(defaultModel, r.row) as never;
                 },
             };
         },
@@ -302,7 +348,14 @@ function incompatibleAuthMapping(message: string): CdbError {
  * all four core models and every shipping plugin model use that
  * shape for their internal model-store operations.
  */
-function whereToFlat(where: CleanedWhere[]): { [k: string]: RawJson } {
+function defineDataProperty(target: Record<string, RawJson>, field: string, value: RawJson): void {
+    Object.defineProperty(target, field, { configurable: true, enumerable: true, value, writable: true });
+}
+
+function whereToFlat(
+    where: CleanedWhere[],
+    canonicalField: (field: string) => string = field => field
+): { [k: string]: RawJson } {
     const out: { [k: string]: RawJson } = {};
     for (const w of where) {
         if (w.operator !== "eq") {
@@ -317,7 +370,14 @@ function whereToFlat(where: CleanedWhere[]): { [k: string]: RawJson } {
                 message: "chardb auth adapter: OR connectors are not supported in where clauses",
             });
         }
-        out[w.field] = normalize(w.value);
+        const field = canonicalField(w.field);
+        if (Object.hasOwn(out, field)) {
+            throw new CdbError({
+                code: "CDB_UNSUPPORTED_FEATURE",
+                message: `chardb auth adapter: repeated where field "${field}" is not supported for mutations`,
+            });
+        }
+        defineDataProperty(out, field, normalize(w.value));
     }
     return out;
 }
@@ -340,7 +400,10 @@ function isAuthReadOperator(value: unknown): value is AuthReadWhere["operator"] 
     return typeof value === "string" && AUTH_READ_OPERATORS.has(value);
 }
 
-function whereToReadFilters(where: CleanedWhere[]): AuthReadWhere[] {
+function whereToReadFilters(
+    where: CleanedWhere[],
+    canonicalField: (field: string) => string = field => field
+): AuthReadWhere[] {
     const out: AuthReadWhere[] = [];
     for (const condition of where) {
         if (condition.connector === "OR") {
@@ -384,7 +447,7 @@ function whereToReadFilters(where: CleanedWhere[]): AuthReadWhere[] {
                 });
             }
             out.push({
-                field: condition.field,
+                field: canonicalField(condition.field),
                 operator,
                 value: condition.value.map(value => normalize(value)),
             });
@@ -419,7 +482,7 @@ function whereToReadFilters(where: CleanedWhere[]): AuthReadWhere[] {
             });
         }
         out.push({
-            field: condition.field,
+            field: canonicalField(condition.field),
             operator,
             value,
             ...(mode === "insensitive" ? { mode } : {}),
