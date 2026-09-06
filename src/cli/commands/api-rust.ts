@@ -93,19 +93,19 @@ function columnType(column: Column): string {
     return column.notNull ? base : `Option<${base}>`;
 }
 
-/** A Rust string literal; JSON escapes such as `\f` and `\uXXXX` are not valid Rust. */
+/** A Rust string literal: JSON escapes such as `\f` and `\uXXXX` are not Rust, and Rust has no lone surrogates. */
 function rustString(text: string): string {
-    const escaped = text.replaceAll(/["\\\p{Cc}]/gu, character =>
+    const escaped = text.replaceAll(/["\\\p{Cc}\p{Cs}]/gu, character =>
         character === '"' || character === "\\"
             ? `\\${character}`
-            : `\\u{${character.codePointAt(0)?.toString(16) ?? "0"}}`
+            : `\\u{${(/\p{Cs}/u.test(character) ? 0xfffd : (character.codePointAt(0) ?? 0)).toString(16)}}`
     );
     return `"${escaped}"`;
 }
 
 /** Text placed in a `///` comment, so it must stay on its line. */
 function docText(text: string): string {
-    return text.replaceAll(/\p{Cc}/gu, "");
+    return text.replaceAll(/[\p{Cc}\p{Cs}]/gu, "");
 }
 
 /** Lowercase words split on separators and camel-case boundaries. */

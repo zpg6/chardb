@@ -34,7 +34,7 @@ export const allMessages = api.query({
 
 export const taggedMessages = api.query({
     ref: "src/queries.ts#taggedMessages",
-    args: z.object({ organizationId: z.string(), ids: z.array(z.string()).default([]) }),
+    args: z.object({ organizationId: z.string().default(""), ids: z.array(z.string()).default([]) }),
     query: (db, args) =>
         db
             .select()

@@ -86,6 +86,7 @@ describe("chardb api rust", () => {
                         status: z.enum(["in_progress", "In Progress", "self"]),
                         when: z.date().optional(),
                         "form\ffeed": z.string(),
+                        "lone\ud800surrogate": z.string(),
                     })
                 ),
                 list_messages: mutation("m#b\nfn main() {}"),
@@ -99,6 +100,7 @@ describe("chardb api rust", () => {
         expect(rendered).toContain('#[serde(rename = "self")]\n    Self_,');
         expect(rendered).toContain("pub when: Option<::serde_json::Value>,");
         expect(rendered).toContain('#[serde(rename = "form\\u{c}feed")]\n    pub form_feed: String,');
+        expect(rendered).toContain('#[serde(rename = "lone\\u{fffd}surrogate")]\n    pub lone_surrogate: String,');
         expect(rendered).toContain("pub const LIST_MESSAGES:");
         expect(rendered).toContain("/// `m#bfn main() {}`\npub const LIST_MESSAGES_2:");
         expect(rendered).toContain('Mutation::new("m#b\\u{a}fn main() {}")');

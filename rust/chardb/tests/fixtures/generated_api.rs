@@ -69,8 +69,9 @@ pub struct PostMessageArgs {
 /// Arguments for `taggedMessages`.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct TaggedMessagesArgs {
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "organizationId")]
-    pub organization_id: String,
+    pub organization_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ids: Option<Vec<String>>,
 }
