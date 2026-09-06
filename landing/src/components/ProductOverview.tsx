@@ -24,11 +24,17 @@ const RUST_KEYWORDS = new Set([
     "await",
     "break",
     "const",
+    "continue",
     "derive",
+    "fn",
     "if",
     "let",
     "loop",
+    "match",
+    "mod",
     "mut",
+    "pub",
+    "return",
     "struct",
     "use",
 ]);
@@ -177,36 +183,36 @@ function RustClientSnippet() {
     return (
         <code>
             {highlightCode(
-                `// Application-authored types and operation handle.
-use chardb_client::{AsyncClient, ClientConfig, Query, SubscriptionEvent};
-use serde::{Deserialize, Serialize};
+                `// bunx chardb api rust --out src/chardb_api.rs
+mod chardb_api;
 
-#[derive(Serialize)]
-struct ListMessagesArgs {
-  #[serde(rename = "organizationId")]
+use chardb_api::{ListMessagesArgs, LIST_MESSAGES};
+use chardb_client::{AsyncClient, ClientConfig, Result, SubscriptionEvent};
+
+async fn watch_messages(
+  endpoint: &str,
+  jwt: String,
   organization_id: String,
-  limit: u32,
-}
+) -> Result<()> {
+  let client = AsyncClient::connect(
+    ClientConfig::with_token(endpoint, jwt),
+  ).await?;
+  let args = ListMessagesArgs { organization_id, limit: Some(50) };
+  let mut messages = client.subscribe(LIST_MESSAGES, &args)?;
 
-#[derive(Deserialize)]
-struct Message { id: String, body: String }
-
-const LIST_MESSAGES: Query<ListMessagesArgs, Message> =
-  Query::new("messages#list");
-
-let client = AsyncClient::connect(
-  ClientConfig::with_token(endpoint, jwt)
-).await?;
-
-let mut messages = client.subscribe(
-  LIST_MESSAGES,
-  &ListMessagesArgs { organization_id, limit: 50 },
-)?;
-
-loop {
-  let event = messages.recv().await?;
-  if matches!(&event, SubscriptionEvent::Closed) { break; }
-  render(event);
+  loop {
+    match messages.recv().await? {
+      SubscriptionEvent::Snapshot { rows }
+      | SubscriptionEvent::Update { rows } => {
+        for row in rows { println!("{}: {}", row.id, row.body); }
+      }
+      SubscriptionEvent::Error(error) => return Err(error),
+      SubscriptionEvent::Closed => break,
+      _ => {}
+    }
+  }
+  client.close();
+  Ok(())
 }`,
                 "rust"
             )}

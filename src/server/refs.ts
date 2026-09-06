@@ -51,3 +51,11 @@ function autoRef(target: object, kind: ChardbFunctionKind): string {
             : "anonymous";
     return `${kind}#${name || "anonymous"}`;
 }
+
+export function isRefMarked(value: unknown): value is ChardbRefMarker {
+    if (value === null || (typeof value !== "function" && typeof value !== "object")) return false;
+    const marker = value as Partial<ChardbRefMarker>;
+    return (
+        typeof marker[REF_KEY] === "string" && (marker.__chardbKind === "mutation" || marker.__chardbKind === "query")
+    );
+}
