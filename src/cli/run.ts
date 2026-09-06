@@ -106,9 +106,10 @@ export async function runCli(ctx: CliContext, argv: readonly string[]): Promise<
             }
         }
         case "api": {
-            const out = rest[1] === "--out" ? rest[2] : undefined;
-            const check = rest[3] === "--check";
-            if (rest[0] !== "rust" || !out || rest.length !== (check ? 4 : 3)) {
+            const flags = rest.slice(1);
+            const out = flags[flags.indexOf("--out") + 1];
+            const check = flags.includes("--check");
+            if (rest[0] !== "rust" || !flags.includes("--out") || !out || flags.length !== (check ? 3 : 2)) {
                 ctx.stderr("usage: chardb api rust --out <file> [--check]\n");
                 return 2;
             }
