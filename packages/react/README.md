@@ -1,6 +1,6 @@
 # @chardb/react
 
-This repository includes the React hooks for CharDB. The npm package is not public yet. Configure Better Auth once, then query and mutate with the authenticated user or organization scope.
+React hooks for CharDB. Configure Better Auth once, then query and mutate with the authenticated user or organization scope.
 
 ```tsx
 import { organizationClient, jwtClient } from "better-auth/client/plugins";
@@ -20,4 +20,4 @@ export const db = createChardbReactClient({
 });
 ```
 
-The generated project contains the complete Better Auth and Worker setup. Create it with `bunx @chardb/core init my-chardb-app` after the packages are published.
+The generated project contains the complete Better Auth and Worker setup. Create it with `bunx @chardb/core init my-chardb-app`.

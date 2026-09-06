@@ -8,6 +8,11 @@
         "access": "public"
     },
     "homepage": "https://chardb.dev",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/zpg6/chardb.git",
+        "directory": "packages/react"
+    },
     "files": ["dist", "README.md"],
     "scripts": {
         "build": "unbuild",
