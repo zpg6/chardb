@@ -46,7 +46,10 @@ type Schema = Record<string, unknown>;
 function isMarked(value: unknown): value is MarkedHandle {
     if (typeof value !== "function" && (typeof value !== "object" || value === null)) return false;
     const marker = value as Partial<MarkedHandle>;
-    return typeof marker.__chardbRef === "string" && typeof marker.__chardbKind === "string";
+    return (
+        typeof marker.__chardbRef === "string" &&
+        (marker.__chardbKind === "query" || marker.__chardbKind === "mutation")
+    );
 }
 
 function jsonSchemaOf(ref: string, validator: StandardSchemaV1 | undefined): Schema | null {
@@ -58,7 +61,7 @@ function jsonSchemaOf(ref: string, validator: StandardSchemaV1 | undefined): Sch
     return props.jsonSchema.input({ target: "draft-2020-12" });
 }
 
-/** Smallest value the schema admits, used only to compile the planned select. */
+/** One value per schema node, enough to compile the planned select; it need not satisfy every constraint. */
 function sampleOf(schema: unknown): unknown {
     if (typeof schema !== "object" || schema === null) return null;
     const node = schema as Schema;

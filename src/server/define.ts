@@ -123,7 +123,7 @@ export type MutationOptions<TArgs = unknown> =
 export type MutationFn<TDb, TArgs, TResult> = ((ctx: MutationCtx<TDb>, args: TArgs) => TResult) & {
     readonly __chardbKind: "mutation";
     readonly __chardbRef: Brand<string, "ChardbRef">;
-    /** The `args` validator itself, read by `chardb api export`. */
+    /** The `args` validator itself, read by `chardb api rust`. */
     readonly __chardbArgs?: StandardSchemaV1<unknown, TArgs>;
 };
 
@@ -132,7 +132,7 @@ export type QueryFn<TDb, TArgs, TResult> = ((ctx: QueryCtx<TDb>, args: TArgs) =>
     readonly __chardbRef: Brand<string, "ChardbRef">;
     /** Server-only validator used before routing intent extraction. */
     readonly __chardbValidateArgs?: (args: unknown) => Promise<TArgs>;
-    /** The `args` validator itself, read by `chardb api export`. */
+    /** The `args` validator itself, read by `chardb api rust`. */
     readonly __chardbArgs?: StandardSchemaV1<unknown, TArgs>;
     /** Runtime-compiled plan for the single-source Drizzle query form. */
     readonly __chardbCompilePlan?: (args: TArgs) => RegisteredQueryPlan;

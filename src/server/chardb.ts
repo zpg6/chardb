@@ -74,7 +74,7 @@ export type ChardbApp<TPlugins extends readonly BetterAuthPlugin[], TSchema exte
     readonly auth: ChardbAuth<TPlugins>;
     readonly ownership: "organization" | "user";
     readonly schema: TSchema & SynthesizedAuthSchema<TPlugins>;
-    /** The registered handles passed as `api`, as `chardb api export` describes them. */
+    /** The registered handles passed as `api`, as `chardb api rust` reads them. */
     readonly api: Readonly<Record<string, unknown>>;
     readonly DB: typeof DB;
     readonly Cdb: typeof Cdb;
