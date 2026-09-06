@@ -20,6 +20,8 @@ type Target = {
 const TARGETS: Target[] = [
     // OpenGraph + Twitter card (1200x630, served at 2x for crisp resampling)
     { route: "/og.html", out: "og.png", width: 1200, height: 630, scale: 2 },
+    // README header (1280x400, served at 2x).
+    { route: "/banner.html", out: "banner.png", width: 1280, height: 400, scale: 2 },
     // Favicon at 512×512 — used as <link rel="icon"> on supported browsers.
     { route: "/favicon.html", out: "favicon-512.png", width: 512, height: 512, scale: 1 },
     // Apple touch icon at 180×180.
