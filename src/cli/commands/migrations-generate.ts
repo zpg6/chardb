@@ -1,13 +1,11 @@
-import { fileURLToPath } from "node:url";
 import { type ChardbSchemaSnapshotInput, defineSchemaSnapshot } from "../../server/schema-snapshot.ts";
 import { stableJson } from "../../util/canonical.ts";
 import type { CliCommandResult, CliContext } from "../context.ts";
+import { runInspection } from "../inspector.ts";
 import { renderAdditiveMigrationArtifacts, renderInitialMigrationArtifacts } from "../migration-artifacts.ts";
 import { diffAdditiveSchemaSnapshots } from "../schema-snapshot-diff.ts";
 
 const MIGRATION_NAME = /^[a-z0-9][a-z0-9_-]{0,127}$/;
-const INSPECTION_TIMEOUT_MS = 15_000;
-const INSPECTION_OUTPUT_BYTES = 16 * 1_024 * 1_024 + 1_024;
 
 export interface MigrationsGenerateOptions {
     readonly name: string;
@@ -88,17 +86,9 @@ async function inspectTwice(
     version: number,
     previousDigest: string | null
 ): Promise<ChardbSchemaSnapshotInput> {
-    if (!ctx.runCommand || !ctx.selfCommand) throw new Error("fresh Bun schema inspection is unavailable");
-    const selfArgs = schemaInspectorSelfArgs(ctx.selfCommand.executable, ctx.selfCommand.args);
-    const invocation = {
-        executable: ctx.selfCommand.executable,
-        args: [...selfArgs, "__migrations-inspect", name, String(version), previousDigest ?? "-"],
-        cwd: ctx.cwd,
-        timeoutMs: INSPECTION_TIMEOUT_MS,
-        maxOutputBytes: INSPECTION_OUTPUT_BYTES,
-    } as const;
-    const first = parseInspection(await ctx.runCommand(invocation));
-    const second = parseInspection(await ctx.runCommand(invocation));
+    const subcommand = ["__migrations-inspect", name, String(version), previousDigest ?? "-"];
+    const first = parseInspection(await runInspection(ctx, subcommand));
+    const second = parseInspection(await runInspection(ctx, subcommand));
     if (first.snapshot.name !== name || second.snapshot.name !== name || first.snapshot.version !== version) {
         throw new Error("schema inspector returned the wrong migration identity");
     }
@@ -106,15 +96,6 @@ async function inspectTwice(
         throw new Error("schema inspection is nondeterministic across fresh Bun processes");
     }
     return first.snapshot;
-}
-
-function schemaInspectorSelfArgs(executable: string, args: readonly string[]): readonly string[] {
-    if (executable !== process.execPath) return args;
-    const source = import.meta.url.endsWith(".ts");
-    const preloadPath = fileURLToPath(
-        new URL(source ? "../schema-inspector-preload.ts" : "../cli/schema-inspector-preload.mjs", import.meta.url)
-    );
-    return ["--preload", preloadPath, ...args];
 }
 
 async function readStoredHistory(

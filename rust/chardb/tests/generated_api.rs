@@ -1,19 +1,22 @@
 //! `chardb api rust` output must compile against this crate and keep the wire shape.
 //! `test/cli/api_rust.test.ts` regenerates the fixture from the app it describes.
 
+use std::collections::HashMap;
+
 use serde_json::json;
 
 #[path = "fixtures/generated_api.rs"]
 mod generated;
 
 use generated::{
-    ListMessagesArgs, ListMessagesArgsKind, MessagesRow, PostMessageArgs, CLEAR_MESSAGES,
-    LIST_MESSAGES, POST_MESSAGE,
+    ListMessagesArgs, ListMessagesArgsKind, ListMessagesArgsScope, MessagesRow, PostMessageArgs,
+    ALL_MESSAGES, CLEAR_MESSAGES, LIST_MESSAGES, POST_MESSAGE,
 };
 
 #[test]
 fn generated_handles_keep_references_and_wire_keys() {
     assert_eq!(LIST_MESSAGES.reference(), "src/queries.ts#listMessages");
+    assert_eq!(ALL_MESSAGES.reference(), "src/queries.ts#allMessages");
     assert_eq!(POST_MESSAGE.reference(), "src/api.ts#postMessage");
     assert_eq!(CLEAR_MESSAGES.reference(), "src/api.ts#clearMessages");
 
@@ -21,10 +24,12 @@ fn generated_handles_keep_references_and_wire_keys() {
         organization_id: "org-1".to_owned(),
         limit: None,
         kind: Some(ListMessagesArgsKind::Pinned),
+        scope: Some(ListMessagesArgsScope::Self_),
+        filters: Some(HashMap::from([("author".to_owned(), "ann".to_owned())])),
     };
     assert_eq!(
         serde_json::to_value(&args).unwrap(),
-        json!({ "organizationId": "org-1", "kind": "pinned" })
+        json!({ "organizationId": "org-1", "kind": "pinned", "scope": "self", "filters": { "author": "ann" } })
     );
 
     let post = PostMessageArgs {
@@ -33,10 +38,20 @@ fn generated_handles_keep_references_and_wire_keys() {
         body: "hi".to_owned(),
         r#type: None,
         tags: Some(vec!["a".to_owned()]),
+        due_at: Some(None),
     };
     assert_eq!(
         serde_json::to_value(&post).unwrap(),
-        json!({ "id": "m1", "organizationId": "org-1", "body": "hi", "type": null, "tags": ["a"] })
+        json!({ "id": "m1", "organizationId": "org-1", "body": "hi", "type": null, "tags": ["a"], "dueAt": null })
+    );
+    let untouched = PostMessageArgs {
+        due_at: None,
+        tags: None,
+        ..post
+    };
+    assert_eq!(
+        serde_json::to_value(&untouched).unwrap(),
+        json!({ "id": "m1", "organizationId": "org-1", "body": "hi", "type": null })
     );
 
     let row: MessagesRow = serde_json::from_value(json!({

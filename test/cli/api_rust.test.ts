@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { resolve } from "node:path";
-import { runApiRust } from "../../src/cli/commands/api-rust.ts";
+import { z } from "zod";
+import { renderRustModule, runApiRust } from "../../src/cli/commands/api-rust.ts";
 import { type CliContext, REAL_CONTEXT } from "../../src/cli/context.ts";
 import { runCli } from "../../src/cli/run.ts";
+import { api } from "../../src/server/index.ts";
 
 const ROOT = resolve(import.meta.dir, "../..");
 /** Compiled and exercised by `rust/chardb/tests/generated_api.rs`. */
@@ -41,8 +43,10 @@ export const listMessages = api.query({
     ref: "src/queries.ts#listMessages",
     args: z.object({
         organizationId: z.string(),
-        limit: z.number().int().min(1).max(100).default(50),
+        limit: z.number().int().min(0).max(100).default(50),
         kind: z.enum(["all", "pinned"]).optional(),
+        scope: z.enum(["self", "team"]).optional(),
+        filters: z.record(z.string(), z.string()).optional(),
     }),
     query: (db, args) =>
         db
@@ -51,6 +55,11 @@ export const listMessages = api.query({
             .where(eq(messages.organizationId, args.organizationId))
             .orderBy(desc(messages.createdAt), desc(messages.id))
             .limit(args.limit),
+});
+export const allMessages = api.query({
+    ref: "src/queries.ts#allMessages",
+    query: db =>
+        db.select().from(messages).where(eq(messages.organizationId, "org-fixture")).orderBy(desc(messages.id)).limit(10),
 });
 `,
     "src/api.ts": `import { z } from "zod";
@@ -65,6 +74,7 @@ export const postMessage = api.mutation({
         body: z.string().min(1),
         type: z.string().nullable(),
         tags: z.array(z.string()).optional(),
+        dueAt: z.string().nullable().optional(),
     }),
     partitionKey: "organizationId",
     handler: (ctx, args) => {
@@ -142,7 +152,45 @@ describe("chardb api rust", () => {
             await runApiRust(ctx, { out: "src/chardb_api.rs" });
             return readFile(`${project}/src/chardb_api.rs`, "utf8");
         });
+        if (process.env.CHARDB_API_RUST_FIXTURE === "update") await Bun.write(FIXTURE_MODULE, rendered);
         expect(rendered).toBe(await readFile(FIXTURE_MODULE, "utf8"));
+    });
+
+    test("keeps distinct wire names distinct and never aborts on a field zod cannot describe", () => {
+        const mutation = (ref: string, args?: z.ZodObject) =>
+            api.mutation({
+                ref,
+                authority: "organization",
+                partitionKey: () => "org",
+                ...(args ? { args } : {}),
+                handler: () => null,
+            });
+        const rendered = renderRustModule(
+            {
+                listMessages: mutation(
+                    "m#a",
+                    z.object({
+                        organizationId: z.string(),
+                        organization_id: z.string(),
+                        status: z.enum(["in_progress", "In Progress", "self"]),
+                        when: z.date().optional(),
+                    })
+                ),
+                list_messages: mutation("m#b"),
+            },
+            {}
+        );
+        expect(rendered).toContain('#[serde(rename = "organizationId")]\n    pub organization_id: String,');
+        expect(rendered).toContain('#[serde(rename = "organization_id")]\n    pub organization_id_2: String,');
+        expect(rendered).toContain("    InProgress,\n");
+        expect(rendered).toContain("    InProgress_2,\n");
+        expect(rendered).toContain('#[serde(rename = "self")]\n    Self_,');
+        expect(rendered).toContain("pub when: Option<::serde_json::Value>,");
+        expect(rendered).toContain("pub const LIST_MESSAGES:");
+        expect(rendered).toContain("pub const LIST_MESSAGES_2:");
+        expect(() => renderRustModule({ a: mutation("m#same"), b: mutation("m#same") }, {})).toThrow(
+            /m#same: registered by two different handles/
+        );
     });
 
     test("--check reports a stale module without touching it", async () => {

@@ -4,26 +4,6 @@
 use chardb_client::{Mutation, Query};
 use serde::{Deserialize, Serialize};
 
-/// `kind` of [`ListMessagesArgs`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-pub enum ListMessagesArgsKind {
-    #[serde(rename = "all")]
-    All,
-    #[serde(rename = "pinned")]
-    Pinned,
-}
-
-/// Arguments for `listMessages`.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct ListMessagesArgs {
-    #[serde(rename = "organizationId")]
-    pub organization_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub limit: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub kind: Option<ListMessagesArgsKind>,
-}
-
 /// One `messages` row.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MessagesRow {
@@ -38,6 +18,39 @@ pub struct MessagesRow {
     pub meta: Option<::serde_json::Value>,
 }
 
+/// `kind` of [`ListMessagesArgs`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum ListMessagesArgsKind {
+    #[serde(rename = "all")]
+    All,
+    #[serde(rename = "pinned")]
+    Pinned,
+}
+
+/// `scope` of [`ListMessagesArgs`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum ListMessagesArgsScope {
+    #[serde(rename = "self")]
+    Self_,
+    #[serde(rename = "team")]
+    Team,
+}
+
+/// Arguments for `listMessages`.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ListMessagesArgs {
+    #[serde(rename = "organizationId")]
+    pub organization_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ListMessagesArgsKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<ListMessagesArgsScope>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filters: Option<::std::collections::HashMap<String, String>>,
+}
+
 /// Arguments for `postMessage`.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct PostMessageArgs {
@@ -48,7 +61,14 @@ pub struct PostMessageArgs {
     pub r#type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "dueAt")]
+    pub due_at: Option<Option<String>>,
 }
+
+/// `src/queries.ts#allMessages`
+pub const ALL_MESSAGES: Query<::serde_json::Value, MessagesRow> =
+    Query::new("src/queries.ts#allMessages");
 
 /// `src/queries.ts#listMessages`
 pub const LIST_MESSAGES: Query<ListMessagesArgs, MessagesRow> =
