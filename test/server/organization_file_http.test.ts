@@ -240,7 +240,12 @@ function fixture(
         },
     };
     const request = (
-        overrides: { readonly key?: string | null; readonly origin?: string; readonly body?: string } = {}
+        overrides: {
+            readonly key?: string | null;
+            readonly origin?: string;
+            readonly body?: BodyInit;
+            readonly headers?: Record<string, string>;
+        } = {}
     ) => {
         const key = overrides.key === undefined ? "avatar-v1" : overrides.key;
         return new Request(
@@ -251,6 +256,7 @@ function fixture(
                     "content-type": "image/png",
                     ...(key === null ? {} : { "idempotency-key": key }),
                     ...(overrides.origin ? { origin: overrides.origin } : {}),
+                    ...overrides.headers,
                 },
                 body: overrides.body ?? "exact bytes",
             }
@@ -420,6 +426,87 @@ describe("private organization file HTTP upload", () => {
         });
         expect(oversized.status).toBe(400);
         expect(tooLarge.calls).toEqual(["auth.session", "catalog.route"]);
+    });
+
+    test("cancels a chunked upload as soon as it crosses the configured limit", async () => {
+        const f = fixture();
+        let pulls = 0;
+        let cancelled = false;
+        const body = new ReadableStream<Uint8Array>(
+            {
+                pull(controller) {
+                    pulls++;
+                    if (pulls <= 2) {
+                        controller.enqueue(new Uint8Array(40));
+                        return;
+                    }
+                    controller.error(new Error("upload reader pulled beyond the rejecting chunk"));
+                },
+                cancel() {
+                    cancelled = true;
+                },
+            },
+            { highWaterMark: 0 }
+        );
+
+        const response = await handleOrganizationFileUploadRequest({
+            request: f.request({ body }),
+            env: f.env,
+            auth: f.auth,
+            resources: [resource],
+        });
+        expect(response.status).toBe(400);
+        expect(cancelled).toBe(true);
+        expect(pulls).toBe(2);
+        expect(f.calls).toEqual(["auth.session", "catalog.route"]);
+    });
+
+    test("fills a declared-length upload exactly and rejects a body that outgrows it", async () => {
+        const chunked = (chunks: readonly Uint8Array[], onCancel: () => void) => {
+            let pulls = 0;
+            return new ReadableStream<Uint8Array>(
+                {
+                    pull(controller) {
+                        const chunk = chunks[pulls++];
+                        if (chunk) controller.enqueue(chunk);
+                        else if (pulls > chunks.length + 1) controller.error(new Error("pulled past the end"));
+                        else controller.close();
+                    },
+                    cancel: onCancel,
+                },
+                { highWaterMark: 0 }
+            );
+        };
+        const encoder = new TextEncoder();
+        const exact = fixture();
+        const stored = await handleOrganizationFileUploadRequest({
+            request: exact.request({
+                headers: { "content-length": "11" },
+                body: chunked([encoder.encode("exact "), encoder.encode("bytes")], () => undefined),
+            }),
+            env: exact.env,
+            auth: exact.auth,
+            resources: [resource],
+        });
+        expect(stored.status).toBe(200);
+        expect(exact.retained()).toBeDefined();
+
+        const lying = fixture();
+        let cancelled = false;
+        const response = await handleOrganizationFileUploadRequest({
+            request: lying.request({
+                headers: { "content-length": "40" },
+                body: chunked([new Uint8Array(40), new Uint8Array(1)], () => {
+                    cancelled = true;
+                }),
+            }),
+            env: lying.env,
+            auth: lying.auth,
+            resources: [resource],
+        });
+        expect(response.status).toBe(400);
+        expect(cancelled).toBe(true);
+        expect(lying.calls).toEqual(["auth.session", "catalog.route"]);
     });
 
     test("rehydrates a message-only Cdb error returned by Workers RPC", async () => {

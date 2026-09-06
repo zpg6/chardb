@@ -71,6 +71,36 @@ function idempotencyKey(request: Request): string {
     return value;
 }
 
+/** A declared length, already bounded by the column, fills one exact buffer; otherwise chunks are joined once. */
+async function readBoundedUploadBody(request: Request, maxBytes: number, declared: number | null): Promise<Uint8Array> {
+    if (!request.body) invalid("file body is required");
+    const exact = declared === null ? undefined : new Uint8Array(declared);
+    const limit = declared ?? maxBytes;
+    const reader = request.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    while (true) {
+        const next = await reader.read();
+        if (next.done) break;
+        if (size + next.value.byteLength > limit) {
+            await reader.cancel().catch(() => undefined);
+            invalid("file size is outside the configured column bound");
+        }
+        if (exact) exact.set(next.value, size);
+        else chunks.push(next.value);
+        size += next.value.byteLength;
+    }
+    if (size < 1 || size !== (declared ?? size)) invalid("file size is outside the configured column bound");
+    if (exact) return exact;
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.byteLength;
+    }
+    return bytes;
+}
+
 function assertSameOrigin(request: Request): void {
     const requestOrigin = new URL(request.url).origin;
     const origin = request.headers.get("origin");
@@ -175,10 +205,11 @@ export async function handleOrganizationFileUploadRequest(input: {
                 if (declaredLength !== null && Number(declaredLength) > context.resource.maxSize) {
                     invalid("file exceeds the configured column size");
                 }
-                const bytes = new Uint8Array(await input.request.arrayBuffer());
-                if (bytes.byteLength < 1 || bytes.byteLength > context.resource.maxSize) {
-                    invalid("file size is outside the configured column bound");
-                }
+                const bytes = await readBoundedUploadBody(
+                    input.request,
+                    context.resource.maxSize,
+                    declaredLength === null ? null : Number(declaredLength)
+                );
                 const fileId = await organizationFileId({
                     principalId: context.session.principalId,
                     locator,
