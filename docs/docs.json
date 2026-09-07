@@ -3,7 +3,7 @@
     "theme": "mint",
     "name": "CharDB",
     "description": "Better Auth-owned SQLite, files, and live Drizzle queries for Cloudflare Workers.",
-    "favicon": "/favicon.svg",
+    "favicon": "/favicon.png",
     "colors": {
         "primary": "#EC5713",
         "light": "#F0642B",

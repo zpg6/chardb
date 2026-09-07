@@ -10,6 +10,7 @@ export default defineConfig({
                 main: resolve(import.meta.dirname, "index.html"),
                 why: resolve(import.meta.dirname, "why/index.html"),
                 og: resolve(import.meta.dirname, "og.html"),
+                banner: resolve(import.meta.dirname, "banner.html"),
                 favicon: resolve(import.meta.dirname, "favicon.html"),
             },
         },

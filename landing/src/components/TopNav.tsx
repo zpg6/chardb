@@ -27,9 +27,9 @@ export function TopNav({ homeHref = "#top", storyActive = false }: TopNavProps) 
                             </a>
                         </li>
                         <li>
-                            <span className="text-fg-dim" aria-label="Documentation coming soon">
-                                docs soon
-                            </span>
+                            <a href="https://docs.chardb.dev" className="nav-link hover:text-fg transition-colors">
+                                docs
+                            </a>
                         </li>
                         <li>
                             <a
