@@ -19,7 +19,7 @@ export function Banner() {
                     justifyContent: "center",
                 }}
             >
-                <span className="mb-7 font-mono lowercase text-fg" style={{ fontSize: 28, letterSpacing: "-0.02em" }}>
+                <span className="mb-6 font-mono lowercase text-fg" style={{ fontSize: 38, letterSpacing: "-0.02em" }}>
                     chardb
                 </span>
                 <h1
@@ -31,9 +31,7 @@ export function Banner() {
                         <span className="worker-mark">
                             <CloudflareWorkersMark />
                         </span>
-                        <span>
-                            <span className="worker-cloudflare">Cloudflare</span> Worker.
-                        </span>
+                        <span className="worker-cloudflare">Cloudflare Worker.</span>
                     </span>
                 </h1>
                 <span className="mt-6 inline-flex w-fit rounded-full border border-accent/35 bg-accent/10 px-3 py-1 font-mono text-[13px] uppercase tracking-[0.14em] text-accent">
