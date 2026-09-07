@@ -19,6 +19,9 @@ export function Banner() {
                     justifyContent: "center",
                 }}
             >
+                <span className="mb-7 font-mono lowercase text-fg" style={{ fontSize: 28, letterSpacing: "-0.02em" }}>
+                    chardb
+                </span>
                 <h1
                     className="font-sans font-semibold tracking-tight text-fg"
                     style={{ fontSize: 60, lineHeight: 1.05, letterSpacing: "-0.02em" }}
