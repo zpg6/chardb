@@ -31,7 +31,7 @@ describe("chardb command availability", () => {
 
         expect(await runCli(ctx, ["--help"])).toBe(0);
         expect(err).toEqual([]);
-        for (const command of ["init", "doctor", "migrate", "migrations", "vectorize", "api", "backups"]) {
+        for (const command of ["init", "doctor", "migrate", "migrations", "vectorize", "generate", "backups"]) {
             expect(out.join("")).toContain(`chardb ${command}`);
         }
         expect(out.join("")).not.toContain("shards");
@@ -40,6 +40,32 @@ describe("chardb command availability", () => {
         }
         expect(out.join("")).not.toContain("not implemented");
         expect(out.join("")).not.toContain("__migrations-inspect");
+        expect(out.join("")).not.toContain("__generate-inspect");
+        expect(out.join("")).not.toContain("api rust");
+    });
+
+    test("parses client generation strictly and no longer knows the api command", async () => {
+        for (const argv of [
+            ["generate", "extra"],
+            ["generate", "--check", "extra"],
+            ["generate", "--nope"],
+        ]) {
+            const { ctx, err } = fakeCtx();
+            expect(await runCli(ctx, argv)).toBe(2);
+            expect(err).toEqual(["usage: chardb generate [--check]\n"]);
+        }
+        const missing = fakeCtx();
+        expect(await runCli(missing.ctx, ["generate", "--check"])).toBe(1);
+        expect(missing.err).toEqual(["chardb generate: src/worker.ts is missing\n"]);
+
+        const old = fakeCtx();
+        expect(await runCli(old.ctx, ["api", "rust", "--out", "src/chardb_api.rs"])).toBe(2);
+        expect(old.err).toEqual(["unknown command: api\n"]);
+
+        const hidden = fakeCtx();
+        expect(await runCli(hidden.ctx, ["__generate-inspect", "extra"])).toBe(2);
+        expect(hidden.out).toEqual([]);
+        expect(hidden.err).toEqual([]);
     });
 
     test("parses initial migration generation strictly", async () => {

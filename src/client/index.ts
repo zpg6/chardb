@@ -9,7 +9,8 @@
 
 import { uuidv7 } from "uuidv7";
 import { CdbError, type CdbErrorCode, isCdbError } from "../errors.ts";
-import { ChardbRef, ClientId, type Cookie, MutId, type RawJson, SubId } from "../types.ts";
+import { type MutationHandle, type QueryHandle, type QueryRow, type WireResult, handleRef } from "../handles.ts";
+import { type ChardbRef, ClientId, type Cookie, MutId, type RawJson, SubId } from "../types.ts";
 import { PROTOCOL_V, type RowPatch, type Up, checkProtocolV, decodeDown, encodeWire } from "../wire.ts";
 import { assertSerializedSize, snapshotMutationArguments, snapshotSubscriptionArguments } from "./serialized-json.ts";
 
@@ -147,13 +148,13 @@ function decodeJwtRefreshClaims(jwt: string): JwtRefreshClaims | null {
 
 export interface ChardbClient {
     /** Open a live subscription; returns a disposer. */
-    subscribe<TRow = RawJson>(
-        ref: string,
-        args: RawJson,
-        onChange: (rows: TRow[], state?: SubState) => void
+    subscribe<TArgs, TResult>(
+        handle: QueryHandle<TArgs, TResult>,
+        args: NoInfer<TArgs>,
+        onChange: (rows: QueryRow<TResult>[], state?: SubState) => void
     ): { unsubscribe: () => void };
     /** Issue a mutation; resolves with server result after canonical state arrives. */
-    mutate<TResult = RawJson>(ref: string, args: RawJson): Promise<TResult>;
+    mutate<TArgs, TResult>(handle: MutationHandle<TArgs, TResult>, args: NoInfer<TArgs>): Promise<WireResult<TResult>>;
     close(): void;
     /** Current connection liveness (for diagnostics). */
     readonly state: "connecting" | "open" | "reconnecting" | "closed";
@@ -942,10 +943,10 @@ export function createDeferredChardbClientController(
         }
     }
 
-    function subscribe<TRow = RawJson>(
-        ref: string,
-        args: RawJson,
-        onChange: (rows: TRow[], state?: SubState) => void
+    function subscribe<TArgs, TResult>(
+        handle: QueryHandle<TArgs, TResult>,
+        args: NoInfer<TArgs>,
+        onChange: (rows: QueryRow<TResult>[], state?: SubState) => void
     ): { unsubscribe: () => void } {
         if (terminated) {
             throw new CdbError({
@@ -953,8 +954,8 @@ export function createDeferredChardbClientController(
                 message: "cannot open a subscription after the CharDB client has closed",
             });
         }
-        const queryRef = ChardbRef(ref);
-        const ownedArgs = snapshotSubscriptionArguments(args);
+        const queryRef = handleRef(handle, "query");
+        const ownedArgs = snapshotSubscriptionArguments(args as RawJson);
         if (subs.size >= MAX_ACTIVE_SUBSCRIPTIONS) {
             throw new CdbError({
                 code: "CDB_RATE_LIMITED",
@@ -964,7 +965,7 @@ export function createDeferredChardbClientController(
         assertAggregateQueryState(new Map(), { rows: [] }, "CDB_RATE_LIMITED");
         const subId = SubId(nextSubId++);
         const widenedListener: (rows: RawJson[], state: SubState) => void = (rows, state) =>
-            onChange(rows as readonly RawJson[] as TRow[], state);
+            onChange(rows as readonly RawJson[] as QueryRow<TResult>[], state);
         const rec: SubRecord = {
             subId,
             ref: queryRef,
@@ -1017,7 +1018,10 @@ export function createDeferredChardbClientController(
         };
     }
 
-    function mutate<TResult = RawJson>(ref: string, args: RawJson): Promise<TResult> {
+    function mutate<TArgs, TResult>(
+        handle: MutationHandle<TArgs, TResult>,
+        args: NoInfer<TArgs>
+    ): Promise<WireResult<TResult>> {
         if (terminated) {
             return Promise.reject(
                 new CdbError({
@@ -1029,8 +1033,8 @@ export function createDeferredChardbClientController(
         let mutationRef: ChardbRef;
         let ownedArgs: RawJson;
         try {
-            mutationRef = ChardbRef(ref);
-            ownedArgs = snapshotMutationArguments(args);
+            mutationRef = handleRef(handle, "mutation");
+            ownedArgs = snapshotMutationArguments(args as RawJson);
         } catch (error) {
             return Promise.reject(error);
         }
@@ -1043,7 +1047,7 @@ export function createDeferredChardbClientController(
             );
         }
         const mutId = MutId(uuidv7());
-        return new Promise<TResult>((resolve, reject) => {
+        return new Promise<WireResult<TResult>>((resolve, reject) => {
             const rec: PendingMutation = {
                 mutId,
                 ref: mutationRef,

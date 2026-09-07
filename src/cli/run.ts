@@ -15,8 +15,7 @@ Commands:
   chardb migrations generate --name <name>
                                 append the next immutable additive migration
   chardb vectorize prepare      create or verify required Vectorize metadata indexes
-  chardb api rust --out <file> [--check]
-                                write typed chardb-client handles for the registered queries and mutations
+  chardb generate [--check]     write the typed client modules declared by clients on chardb({...})
   chardb migrate --url <worker> --id <id> --target <version> [--concurrency <1-32>] [--baseline]
   chardb backups create --url <worker> --out <file> [--at <ISO-8601>]
                                 save a native Durable Object recovery point
@@ -105,31 +104,20 @@ export async function runCli(ctx: CliContext, argv: readonly string[]): Promise<
                 return 1;
             }
         }
-        case "api": {
-            const flags = rest.slice(1);
-            const out = flags[flags.indexOf("--out") + 1];
-            const check = flags.includes("--check");
-            if (rest[0] !== "rust" || !flags.includes("--out") || !out || flags.length !== (check ? 3 : 2)) {
-                ctx.stderr("usage: chardb api rust --out <file> [--check]\n");
+        case "generate":
+        case "__generate-inspect": {
+            const check = rest[0] === "--check";
+            if (rest.length !== (check ? 1 : 0)) {
+                if (cmd === "generate") ctx.stderr("usage: chardb generate [--check]\n");
                 return 2;
             }
             try {
-                const { runApiRust } = await import("./commands/api-rust.ts");
-                await runApiRust(ctx, { out, check });
+                const { runGenerate, runGenerateInspect } = await import("./commands/generate.ts");
+                await (cmd === "generate" ? runGenerate : runGenerateInspect)(ctx, { check });
                 return 0;
             } catch (error) {
-                ctx.stderr(`chardb api rust: ${error instanceof Error ? error.message : String(error)}\n`);
-                return 1;
-            }
-        }
-        case "__api-inspect": {
-            if (rest.length !== 0) return 2;
-            try {
-                const { runApiInspect } = await import("./commands/api-rust.ts");
-                await runApiInspect(ctx);
-                return 0;
-            } catch (error) {
-                ctx.stderr(`api inspection failed: ${error instanceof Error ? error.message : String(error)}\n`);
+                const message = error instanceof Error ? error.message : String(error);
+                ctx.stderr(cmd === "generate" ? `chardb generate: ${message}\n` : `${message}\n`);
                 return 1;
             }
         }

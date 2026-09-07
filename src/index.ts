@@ -10,6 +10,8 @@ export {
     type CdbErrorInit,
 } from "./errors.ts";
 export { createChardbClient, type ChardbClient, type ChardbClientOptions } from "./client/index.ts";
+export type { MutationHandle, QueryHandle, QueryRow, WireResult } from "./handles.ts";
+export type { RawJson } from "./types.ts";
 export {
     client,
     type ChardbBinding,

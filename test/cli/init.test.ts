@@ -179,6 +179,8 @@ describe("generated tutorial flow", () => {
         expect(versionOne).toContain(".initialMigration");
         expect(JSON.parse(snapshotOne)).toEqual(SCAFFOLD_INITIAL_SNAPSHOT);
         expect(readme).toContain("bunx @chardb/core migrations generate --name add_messages");
+        expect(readme).toContain("`bun run generate --check`");
+        expect(JSON.parse(files.get("/tmp/generated/package.json") ?? "null").scripts.generate).toBe("chardb generate");
         expect(readme).not.toContain("shards split");
         expect(readme).not.toContain("virtual-shard range");
     });

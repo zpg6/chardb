@@ -18,8 +18,10 @@ import {
     createDeferredChardbClientController,
 } from "../src/client/index.ts";
 import { CdbError } from "../src/errors.ts";
+import type { QueryHandle } from "../src/handles.ts";
 import { ChardbRef, ClientId, Cookie, MutId, type RawJson, SubId } from "../src/types.ts";
 import { type Down, PROTOCOL_V, type Up, decodeWire, encodeWire } from "../src/wire.ts";
+import { mutationHandle as m, queryHandle as q } from "./helpers/handles.ts";
 
 class FakeWS {
     static OPEN = 1 as const;
@@ -242,6 +244,59 @@ function installManualTimers(): {
     };
 }
 
+describe("createChardbClient — typed handles", () => {
+    test("subscribe sends the handle's stable ref", async () => {
+        const c = client();
+        const query = q("queries.ts#typed");
+        c.subscribe(query, { organizationId: "org-1" }, () => {});
+        await flush();
+        const ws = fakeWebSocket();
+        await welcome(ws);
+        expect(sentSubscriptions(ws)).toEqual([
+            {
+                t: "sub",
+                subId: SubId(1),
+                ref: ChardbRef(query.__chardbRef.toString()),
+                args: { organizationId: "org-1" },
+            },
+        ]);
+        c.close();
+    });
+
+    test("handles of the wrong kind are rejected before any socket work", async () => {
+        let jwtCalls = 0;
+        const controller = createDeferredChardbClientController({
+            endpoint: "wss://example.com/ws",
+            getJwt: async () => {
+                jwtCalls += 1;
+                return "jwt-stub";
+            },
+            clientId: "c-typed-handles",
+        });
+        const asQuery = m("mutations.ts#post") as unknown as QueryHandle<RawJson, RawJson[]>;
+        expect(() => controller.client.subscribe(asQuery, {}, () => {})).toThrow(TypeError);
+        expect(() => controller.client.subscribe(asQuery, {}, () => {})).toThrow("query requires a defineQuery handle");
+        await expect(controller.client.mutate(q("queries.ts#list") as never, {})).rejects.toThrow(
+            "mutation requires a defineMutation handle"
+        );
+        expect(jwtCalls).toBe(0);
+        expect(FakeWS.instances).toHaveLength(0);
+        controller.client.close();
+    });
+
+    test("handles type their arguments and rows", () => {
+        const c = client();
+        // @ts-expect-error wire refs are not handles
+        expect(() => c.subscribe("x#y", {}, () => {})).toThrow(TypeError);
+        const typed = q<{ limit: number }, { id: string }[]>("queries.ts#typed");
+        // @ts-expect-error args must match the handle's argument type
+        c.subscribe(typed, { limit: "ten" }, () => {});
+        const ids: string[] = [];
+        c.subscribe(typed, { limit: 10 }, rows => ids.push(...rows.map(row => row.id)));
+        c.close();
+    });
+});
+
 describe("createChardbClient — wire round-trip", () => {
     test("deferred clients start once after valid subscription or mutation admission", async () => {
         let subscriptionJwtCalls = 0;
@@ -256,12 +311,14 @@ describe("createChardbClient — wire round-trip", () => {
 
         expect(subscriptionJwtCalls).toBe(0);
         expect(FakeWS.instances).toHaveLength(0);
-        expect(() => subscriptionController.client.subscribe("invalid-ref", {}, () => {})).toThrow("invalid ChardbRef");
-        await expect(subscriptionController.client.mutate("invalid-ref", {})).rejects.toThrow("invalid ChardbRef");
+        expect(() => subscriptionController.client.subscribe(q("invalid-ref"), {}, () => {})).toThrow(
+            "invalid stable ref"
+        );
+        await expect(subscriptionController.client.mutate(m("invalid-ref"), {})).rejects.toThrow("invalid stable ref");
         expect(subscriptionJwtCalls).toBe(0);
         expect(FakeWS.instances).toHaveLength(0);
 
-        subscriptionController.client.subscribe("queries.ts#deferred", {}, () => {});
+        subscriptionController.client.subscribe(q("queries.ts#deferred"), {}, () => {});
         subscriptionController.start();
         subscriptionController.start();
         expect(subscriptionJwtCalls).toBe(1);
@@ -278,7 +335,7 @@ describe("createChardbClient — wire round-trip", () => {
             },
             clientId: "c-deferred-mutation",
         });
-        const mutationError = mutationController.client.mutate("mutations.ts#deferred", {}).catch(error => error);
+        const mutationError = mutationController.client.mutate(m("mutations.ts#deferred"), {}).catch(error => error);
         mutationController.start();
         expect(mutationJwtCalls).toBe(1);
         await flush();
@@ -300,10 +357,10 @@ describe("createChardbClient — wire round-trip", () => {
 
         controller.client.close();
         controller.start();
-        expect(() => controller.client.subscribe("queries.ts#closed", {}, () => {})).toThrow(
+        expect(() => controller.client.subscribe(q("queries.ts#closed"), {}, () => {})).toThrow(
             "cannot open a subscription after the CharDB client has closed"
         );
-        await expect(controller.client.mutate("mutations.ts#closed", {})).rejects.toMatchObject({
+        await expect(controller.client.mutate(m("mutations.ts#closed"), {})).rejects.toMatchObject({
             code: "CDB_STREAM_ABORTED",
         });
         await flush();
@@ -326,9 +383,9 @@ describe("createChardbClient — wire round-trip", () => {
             },
             { autoStartOnOperation: false }
         );
-        const mutation = controller.client.mutate("mutations.ts#held-auth", {}).catch(error => error);
+        const mutation = controller.client.mutate(m("mutations.ts#held-auth"), {}).catch(error => error);
         try {
-            controller.client.subscribe("queries.ts#held-auth", {}, () => {});
+            controller.client.subscribe(q("queries.ts#held-auth"), {}, () => {});
             await flush();
             expect(getJwtCalls).toBe(0);
             expect(FakeWS.instances).toHaveLength(0);
@@ -390,7 +447,7 @@ describe("createChardbClient — wire round-trip", () => {
             const ws = fakeWebSocket();
             await welcome(ws);
             const states: string[] = [];
-            c.subscribe("queries.ts#refresh", {}, (_rows, state) => states.push(state ?? "missing"));
+            c.subscribe(q("queries.ts#refresh"), {}, (_rows, state) => states.push(state ?? "missing"));
             ws.emit({ t: "snapshot", subId: SubId(1), cookie: Cookie("c-refresh:1"), rows: [] });
             await flush();
 
@@ -437,7 +494,7 @@ describe("createChardbClient — wire round-trip", () => {
             const ws = fakeWebSocket();
             await welcome(ws);
             const states: string[] = [];
-            c.subscribe("queries.ts#refresh-failure", {}, (_rows, state) => states.push(state ?? "missing"));
+            c.subscribe(q("queries.ts#refresh-failure"), {}, (_rows, state) => states.push(state ?? "missing"));
             ws.emit({ t: "snapshot", subId: SubId(1), cookie: Cookie("c-refresh-failure:1"), rows: [] });
             await flush();
 
@@ -723,8 +780,8 @@ describe("createChardbClient — wire round-trip", () => {
             const first = fakeWebSocket();
             const queuedError = first.onerror;
             const queuedClose = first.onclose;
-            c.subscribe("queries.ts#hello-retry", { organizationId: "org-1" }, () => {});
-            mutation = c.mutate("mutations.ts#hello-retry", { organizationId: "org-1" });
+            c.subscribe(q("queries.ts#hello-retry"), { organizationId: "org-1" }, () => {});
+            mutation = c.mutate(m("mutations.ts#hello-retry"), { organizationId: "org-1" });
 
             first.failNextSend = true;
             expect(() => first.onopen?.()).not.toThrow();
@@ -779,9 +836,9 @@ describe("createChardbClient — wire round-trip", () => {
         await flush();
         const ws = fakeWebSocket();
         let subscriptionNotifications = 0;
-        c.subscribe("queries.ts#listMessages", {}, () => subscriptionNotifications++);
+        c.subscribe(q("queries.ts#listMessages"), {}, () => subscriptionNotifications++);
         let rejectionCount = 0;
-        const mutationErrors = [c.mutate("src/api.ts#one", {}), c.mutate("src/api.ts#two", {})].map(promise =>
+        const mutationErrors = [c.mutate(m("src/api.ts#one"), {}), c.mutate(m("src/api.ts#two"), {})].map(promise =>
             promise.catch(error => {
                 rejectionCount++;
                 return error;
@@ -811,8 +868,8 @@ describe("createChardbClient — wire round-trip", () => {
         const c = client();
         await flush();
         const ws = fakeWebSocket();
-        c.subscribe("queries.ts#listMessages", { organizationId: "org-1" }, () => {});
-        const mutation = c.mutate("src/api.ts#post", { body: "hi" });
+        c.subscribe(q("queries.ts#listMessages"), { organizationId: "org-1" }, () => {});
+        const mutation = c.mutate(m("src/api.ts#post"), { body: "hi" });
         await flush();
         expect(ws.sent.map(raw => (JSON.parse(raw) as Up).t)).toEqual(["hello"]);
 
@@ -836,8 +893,8 @@ describe("createChardbClient — wire round-trip", () => {
             onSessionError: diagnostic => diagnostics.push(diagnostic),
         });
         let subscriptionNotifications = 0;
-        c.subscribe("queries.ts#listMessages", {}, () => subscriptionNotifications++);
-        const mutationError = c.mutate("src/api.ts#post", {}).catch(error => error);
+        c.subscribe(q("queries.ts#listMessages"), {}, () => subscriptionNotifications++);
+        const mutationError = c.mutate(m("src/api.ts#post"), {}).catch(error => error);
         if (!rejectJwt) throw new Error("expected getJwt to start during client construction");
         rejectJwt(new Error("token endpoint unavailable"));
         await flush();
@@ -895,7 +952,7 @@ describe("createChardbClient — wire round-trip", () => {
             clientId: "c-setup-failure",
             onSessionError: diagnostic => diagnostics.push(diagnostic),
         });
-        const mutationError = c.mutate("src/api.ts#post", {}).catch(error => error);
+        const mutationError = c.mutate(m("src/api.ts#post"), {}).catch(error => error);
         await flush();
 
         expect(c.state).toBe("closed");
@@ -914,8 +971,8 @@ describe("createChardbClient — wire round-trip", () => {
         await flush();
         const ws = fakeWebSocket();
         let subscriptionNotifications = 0;
-        c.subscribe("queries.ts#listMessages", {}, () => subscriptionNotifications++);
-        const mutationError = c.mutate("src/api.ts#post", {}).catch(error => error);
+        c.subscribe(q("queries.ts#listMessages"), {}, () => subscriptionNotifications++);
+        const mutationError = c.mutate(m("src/api.ts#post"), {}).catch(error => error);
         ws.onmessage?.({ data: "{" });
         await flush();
 
@@ -936,8 +993,8 @@ describe("createChardbClient — wire round-trip", () => {
         await flush();
         const ws = fakeWebSocket();
         const seen: RawJson[][] = [];
-        c.subscribe("queries.ts#listMessages", {}, rows => seen.push(rows));
-        const mutation = c.mutate("src/api.ts#post", {});
+        c.subscribe(q("queries.ts#listMessages"), {}, rows => seen.push(rows));
+        const mutation = c.mutate(m("src/api.ts#post"), {});
 
         ws.emit({
             t: "poke",
@@ -959,7 +1016,7 @@ describe("createChardbClient — wire round-trip", () => {
         const c = client();
         await flush();
         const ws = fakeWebSocket();
-        const mutationError = c.mutate("src/api.ts#post", {}).catch(error => error);
+        const mutationError = c.mutate(m("src/api.ts#post"), {}).catch(error => error);
 
         ws.emitRaw(encodeWire({ t: "ping" } satisfies Up));
         await flush();
@@ -980,14 +1037,14 @@ describe("createChardbClient — wire round-trip", () => {
             const ws = fakeWebSocket();
             await welcome(ws);
             const seen: RawJson[][] = [];
-            c.subscribe("queries.ts#listMessages", {}, rows => seen.push(rows));
+            c.subscribe(q("queries.ts#listMessages"), {}, rows => seen.push(rows));
             ws.emit({
                 t: "snapshot",
                 subId: SubId(1),
                 cookie: Cookie("c-malformed:1"),
                 rows: [{ secret: "authoritative" }],
             });
-            const mutationError = c.mutate("src/api.ts#post", {}).catch(error => error);
+            const mutationError = c.mutate(m("src/api.ts#post"), {}).catch(error => error);
             expect(seen.at(-1)).toEqual([{ secret: "authoritative" }]);
 
             ws.onmessage?.({ data: "{" });
@@ -1019,7 +1076,7 @@ describe("createChardbClient — wire round-trip", () => {
         const ws = fakeWebSocket();
         await welcome(ws, "c-duplicate-welcome:0");
         const seen: RawJson[][] = [];
-        c.subscribe("queries.ts#listMessages", {}, rows => seen.push(rows));
+        c.subscribe(q("queries.ts#listMessages"), {}, rows => seen.push(rows));
         ws.emit({
             t: "snapshot",
             subId: SubId(1),
@@ -1068,7 +1125,7 @@ describe("createChardbClient — wire round-trip", () => {
             const ws = FakeWS.instances.at(-1);
             if (!ws) throw new Error("expected a fake WebSocket instance");
             await welcome(ws);
-            const mutationError = c.mutate("mutations.ts#pending", {}).catch(error => error);
+            const mutationError = c.mutate(m("mutations.ts#pending"), {}).catch(error => error);
 
             ws.emitRaw(data);
             await flush();
@@ -1090,8 +1147,8 @@ describe("createChardbClient — wire round-trip", () => {
             const ws = fakeWebSocket();
             await welcome(ws);
             let subscriptionNotifications = 0;
-            c.subscribe("queries.ts#pending", {}, () => subscriptionNotifications++);
-            const mutationError = c.mutate("mutations.ts#pending", {}).catch(error => error);
+            c.subscribe(q("queries.ts#pending"), {}, () => subscriptionNotifications++);
+            const mutationError = c.mutate(m("mutations.ts#pending"), {}).catch(error => error);
             expect(timers.scheduledDelays()).toEqual([60_000]);
 
             ws.emitRaw(pokeRawAtBytes(1_024 * 1_024 + 1));
@@ -1124,8 +1181,8 @@ describe("createChardbClient — wire round-trip", () => {
         await flush();
         const ws = fakeWebSocket();
         let subscriptionNotifications = 0;
-        c.subscribe("queries.ts#listMessages", {}, () => subscriptionNotifications++);
-        const mutation = c.mutate("src/api.ts#post", {});
+        c.subscribe(q("queries.ts#listMessages"), {}, () => subscriptionNotifications++);
+        const mutation = c.mutate(m("src/api.ts#post"), {});
         ws.emit({
             t: "error",
             code: "CDB_FORBIDDEN",
@@ -1146,7 +1203,7 @@ describe("createChardbClient — wire round-trip", () => {
         const c = client();
         await flush();
         const ws = fakeWebSocket();
-        const mutation = c.mutate("src/api.ts#post", {});
+        const mutation = c.mutate(m("src/api.ts#post"), {});
         ws.emit({ t: "mustRefetch", subIds: [], reason: "protocolMismatch" });
         await flush();
         expect(c.state).toBe("closed");
@@ -1216,7 +1273,7 @@ describe("createChardbClient — wire round-trip", () => {
         const ws = fakeWebSocket();
         await welcome(ws);
         const seen: unknown[][] = [];
-        c.subscribe<{ id: string }>("queries.ts#listMessages", { organizationId: "org-1" }, rows =>
+        c.subscribe(q<RawJson, { id: string }[]>("queries.ts#listMessages"), { organizationId: "org-1" }, rows =>
             seen.push([...rows])
         );
         await flush();
@@ -1242,9 +1299,9 @@ describe("createChardbClient — wire round-trip", () => {
         await flush();
         const ws = fakeWebSocket();
         await welcome(ws);
-        expect(() => c.subscribe("invalid-ref", {}, () => {})).toThrow("invalid ChardbRef");
+        expect(() => c.subscribe(q("invalid-ref"), {}, () => {})).toThrow("invalid stable ref");
         const subscriptions = Array.from({ length: 64 }, (_, index) =>
-            c.subscribe("queries.ts#bounded", { index }, () => {})
+            c.subscribe(q("queries.ts#bounded"), { index }, () => {})
         );
         const admitted = ws.sent.map(raw => JSON.parse(raw) as Up).filter(message => message.t === "sub");
         expect(admitted).toHaveLength(64);
@@ -1254,18 +1311,18 @@ describe("createChardbClient — wire round-trip", () => {
         ws.emit({ t: "snapshot", subId: SubId(1), cookie: Cookie("c-test:1"), rows: [] });
         await flush();
         const sentBeforeRejection = ws.sent.length;
-        expect(() => c.subscribe("still-invalid-at-cap", {}, () => {})).toThrow("invalid ChardbRef");
+        expect(() => c.subscribe(q("still-invalid-at-cap"), {}, () => {})).toThrow("invalid stable ref");
         expect(ws.sent).toHaveLength(sentBeforeRejection);
         expect(
-            captureCdbError(() => c.subscribe("queries.ts#invalid-at-cap", nestedJson(100), () => {}))
+            captureCdbError(() => c.subscribe(q("queries.ts#invalid-at-cap"), nestedJson(100), () => {}))
         ).toMatchObject({ code: "CDB_INVALID_ARGS", retryable: false });
         expect(ws.sent).toHaveLength(sentBeforeRejection);
-        const limited = captureCdbError(() => c.subscribe("queries.ts#over-limit", {}, () => {}));
+        const limited = captureCdbError(() => c.subscribe(q("queries.ts#over-limit"), {}, () => {}));
         expect(limited).toMatchObject({ code: "CDB_RATE_LIMITED", retryable: true });
         expect(ws.sent).toHaveLength(sentBeforeRejection);
 
         subscriptions[0]?.unsubscribe();
-        const replacement = c.subscribe("queries.ts#replacement", {}, () => {});
+        const replacement = c.subscribe(q("queries.ts#replacement"), {}, () => {});
         expect(
             ws.sent
                 .map(raw => JSON.parse(raw) as Up)
@@ -1277,7 +1334,7 @@ describe("createChardbClient — wire round-trip", () => {
         });
         replacement.unsubscribe();
         c.close();
-        expect(captureCdbError(() => c.subscribe("queries.ts#after-close", {}, () => {}))).toMatchObject({
+        expect(captureCdbError(() => c.subscribe(q("queries.ts#after-close"), {}, () => {}))).toMatchObject({
             code: "CDB_STREAM_ABORTED",
         });
     });
@@ -1298,7 +1355,7 @@ describe("createChardbClient — wire round-trip", () => {
         const cyclicArgs: Record<string, RawJson> = {};
         cyclicArgs.self = cyclicArgs;
 
-        expect(() => c.subscribe("invalid-ref", accessorArgs, () => {})).toThrow(TypeError);
+        expect(() => c.subscribe(q("invalid-ref"), accessorArgs, () => {})).toThrow(TypeError);
         expect(getterRuns).toBe(0);
         for (const args of [
             Array.from({ length: 2_048 }, (_, index) => (index === 0 ? [null, null] : [null])),
@@ -1308,22 +1365,24 @@ describe("createChardbClient — wire round-trip", () => {
             accessorArgs,
             cyclicArgs,
         ] as RawJson[]) {
-            expect(captureCdbError(() => c.subscribe("queries.ts#invalid-arguments", args, () => {}))).toMatchObject({
-                code: "CDB_INVALID_ARGS",
-                retryable: false,
-            });
+            expect(captureCdbError(() => c.subscribe(q("queries.ts#invalid-arguments"), args, () => {}))).toMatchObject(
+                {
+                    code: "CDB_INVALID_ARGS",
+                    retryable: false,
+                }
+            );
         }
         expect(getterRuns).toBe(0);
         expect(ws.sent.map(raw => (JSON.parse(raw) as Up).t)).toEqual(["hello"]);
 
         c.subscribe(
-            "queries.ts#exact-argument-count",
+            q("queries.ts#exact-argument-count"),
             Array.from({ length: 2_048 }, () => [null]),
             () => {}
         );
-        c.subscribe("queries.ts#exact-argument-depth", nestedJson(99), () => {});
-        c.subscribe("queries.ts#exact-empty-argument-depth", nestedEmptyJson(99), () => {});
-        c.subscribe("queries.ts#exact-argument-bytes", { value: "é".repeat(262_138) }, () => {});
+        c.subscribe(q("queries.ts#exact-argument-depth"), nestedJson(99), () => {});
+        c.subscribe(q("queries.ts#exact-empty-argument-depth"), nestedEmptyJson(99), () => {});
+        c.subscribe(q("queries.ts#exact-argument-bytes"), { value: "é".repeat(262_138) }, () => {});
         expect(ws.sent.map(raw => (JSON.parse(raw) as Up).t)).toEqual(["hello"]);
 
         await welcome(ws);
@@ -1354,8 +1413,8 @@ describe("createChardbClient — wire round-trip", () => {
                 configurable: true,
             });
 
-            c.subscribe("queries.ts#owned-arguments", subscriptionArgs, () => {});
-            const mutation = c.mutate("mutations.ts#owned-arguments", mutationArgs).catch(error => error);
+            c.subscribe(q("queries.ts#owned-arguments"), subscriptionArgs, () => {});
+            const mutation = c.mutate(m("mutations.ts#owned-arguments"), mutationArgs).catch(error => error);
             subscriptionArgs.value = "subscription-mutated";
             subscriptionArgs.self = subscriptionArgs;
             mutationArgs.value = "mutation-mutated";
@@ -1404,8 +1463,8 @@ describe("createChardbClient — wire round-trip", () => {
             const subscriptionArgs = poisonedArray("subscription-original");
             const mutationArgs = poisonedArray("mutation-original");
 
-            c.subscribe("queries.ts#poisoned-array-prototype", subscriptionArgs, () => {});
-            const mutation = c.mutate("mutations.ts#poisoned-array-prototype", mutationArgs).catch(error => error);
+            c.subscribe(q("queries.ts#poisoned-array-prototype"), subscriptionArgs, () => {});
+            const mutation = c.mutate(m("mutations.ts#poisoned-array-prototype"), mutationArgs).catch(error => error);
             expect(getterRuns).toBe(0);
             await welcome(ws);
             expect(getterRuns).toBe(0);
@@ -1452,8 +1511,8 @@ describe("createChardbClient — wire round-trip", () => {
             const subscription = adversarialArgs("subscription-descriptor-value");
             const mutationArgs = adversarialArgs("mutation-descriptor-value");
 
-            c.subscribe("queries.ts#single-pass-proxy", subscription.args, () => {});
-            const mutation = c.mutate("mutations.ts#single-pass-proxy", mutationArgs.args).catch(error => error);
+            c.subscribe(q("queries.ts#single-pass-proxy"), subscription.args, () => {});
+            const mutation = c.mutate(m("mutations.ts#single-pass-proxy"), mutationArgs.args).catch(error => error);
             expect(subscription.ownKeysRuns()).toBe(1);
             expect(mutationArgs.ownKeysRuns()).toBe(1);
             expect(subscription.getRuns()).toBe(0);
@@ -1484,7 +1543,9 @@ describe("createChardbClient — wire round-trip", () => {
             await welcome(first);
             first.failNextSend = true;
             const failedArgs: Record<string, RawJson> = { value: "original" };
-            expect(captureCdbError(() => c.subscribe("queries.ts#send-failure", failedArgs, () => {}))).toMatchObject({
+            expect(
+                captureCdbError(() => c.subscribe(q("queries.ts#send-failure"), failedArgs, () => {}))
+            ).toMatchObject({
                 code: "CDB_STREAM_ABORTED",
             });
             failedArgs.self = failedArgs;
@@ -1497,7 +1558,7 @@ describe("createChardbClient — wire round-trip", () => {
             await welcome(reconnected);
             expect(reconnected.sent.map(raw => (JSON.parse(raw) as Up).t)).toEqual(["hello"]);
 
-            c.subscribe("queries.ts#replacement-after-send-failure", {}, () => {});
+            c.subscribe(q("queries.ts#replacement-after-send-failure"), {}, () => {});
             expect(
                 reconnected.sent.map(raw => JSON.parse(raw) as Up).find(message => message.t === "sub")
             ).toMatchObject({ t: "sub", subId: 2 });
@@ -1512,16 +1573,16 @@ describe("createChardbClient — wire round-trip", () => {
         await flush();
         const ws = fakeWebSocket();
         await welcome(ws);
-        const first = c.subscribe("queries.ts#first", {}, () => {});
+        const first = c.subscribe(q("queries.ts#first"), {}, () => {});
         let remainingNotifications = 0;
-        c.subscribe("queries.ts#remaining", {}, () => remainingNotifications++);
+        c.subscribe(q("queries.ts#remaining"), {}, () => remainingNotifications++);
         ws.failNextSend = true;
 
         expect(captureCdbError(() => first.unsubscribe())).toMatchObject({ code: "CDB_STREAM_ABORTED" });
         expect(c.state).toBe("closed");
         expect(ws.readyState).toBe(FakeWS.CLOSED);
         expect(remainingNotifications).toBe(1);
-        expect(captureCdbError(() => c.subscribe("queries.ts#after-unsub-failure", {}, () => {}))).toMatchObject({
+        expect(captureCdbError(() => c.subscribe(q("queries.ts#after-unsub-failure"), {}, () => {}))).toMatchObject({
             code: "CDB_STREAM_ABORTED",
         });
     });
@@ -1533,11 +1594,11 @@ describe("createChardbClient — wire round-trip", () => {
             await flush();
             const ws = fakeWebSocket();
             await welcome(ws);
-            c.subscribe("queries.ts#throwing", {}, rows => {
+            c.subscribe(q("queries.ts#throwing"), {}, rows => {
                 if (rows.length === 0) throw new Error("listener failed");
             });
             const remainingSeen: RawJson[][] = [];
-            c.subscribe("queries.ts#remaining", {}, rows => remainingSeen.push(rows));
+            c.subscribe(q("queries.ts#remaining"), {}, rows => remainingSeen.push(rows));
             ws.emit({
                 t: "snapshot",
                 subId: SubId(2),
@@ -1545,7 +1606,7 @@ describe("createChardbClient — wire round-trip", () => {
                 rows: [{ secret: "authoritative" }],
             });
             expect(remainingSeen.at(-1)).toEqual([{ secret: "authoritative" }]);
-            const mutationError = c.mutate("mutations.ts#pending", {}).catch(error => error);
+            const mutationError = c.mutate(m("mutations.ts#pending"), {}).catch(error => error);
 
             expect(() => c.close()).not.toThrow();
             await expect(mutationError).resolves.toMatchObject({ code: "CDB_STREAM_ABORTED" });
@@ -1570,7 +1631,7 @@ describe("createChardbClient — wire round-trip", () => {
             const first = fakeWebSocket();
             await welcome(first);
             const subscriptions = Array.from({ length: 64 }, (_, index) =>
-                c.subscribe("queries.ts#bounded-reconnect", { index }, () => {})
+                c.subscribe(q("queries.ts#bounded-reconnect"), { index }, () => {})
             );
 
             first.close();
@@ -1584,13 +1645,15 @@ describe("createChardbClient — wire round-trip", () => {
             ).toHaveLength(64);
 
             const sentBeforeRejection = reconnected.sent.length;
-            expect(captureCdbError(() => c.subscribe("queries.ts#reconnect-over-limit", {}, () => {}))).toMatchObject({
+            expect(
+                captureCdbError(() => c.subscribe(q("queries.ts#reconnect-over-limit"), {}, () => {}))
+            ).toMatchObject({
                 code: "CDB_RATE_LIMITED",
             });
             expect(reconnected.sent).toHaveLength(sentBeforeRejection);
 
             subscriptions[0]?.unsubscribe();
-            c.subscribe("queries.ts#reconnect-replacement", {}, () => {});
+            c.subscribe(q("queries.ts#reconnect-replacement"), {}, () => {});
             expect(
                 reconnected.sent
                     .map(raw => JSON.parse(raw) as Up)
@@ -1609,7 +1672,7 @@ describe("createChardbClient — wire round-trip", () => {
         const ws = fakeWebSocket();
         await welcome(ws);
         const seen: unknown[][] = [];
-        c.subscribe("queries.ts#listMessages", {}, rows => seen.push([...rows]));
+        c.subscribe(q("queries.ts#listMessages"), {}, rows => seen.push([...rows]));
         await flush();
 
         ws.emit({
@@ -1635,7 +1698,7 @@ describe("createChardbClient — wire round-trip", () => {
         const ws = fakeWebSocket();
         await welcome(ws);
         const seen: unknown[][] = [];
-        c.subscribe("queries.ts#listMessages", {}, rows => seen.push([...rows]));
+        c.subscribe(q("queries.ts#listMessages"), {}, rows => seen.push([...rows]));
         await flush();
 
         ws.emit({
@@ -1657,7 +1720,7 @@ describe("createChardbClient — wire round-trip", () => {
         const ws = fakeWebSocket();
         await welcome(ws);
         const seen: RawJson[][] = [];
-        c.subscribe("queries.ts#isolated-listener-state", {}, rows => {
+        c.subscribe(q("queries.ts#isolated-listener-state"), {}, rows => {
             seen.push(rows);
             if (seen.length !== 1) return;
             const first = rows[0] as Record<string, RawJson>;
@@ -1691,7 +1754,7 @@ describe("createChardbClient — wire round-trip", () => {
         const ws = fakeWebSocket();
         await welcome(ws);
         const seen: RawJson[][] = [];
-        c.subscribe("queries.ts#proto-data", {}, rows => seen.push(rows));
+        c.subscribe(q("queries.ts#proto-data"), {}, rows => seen.push(rows));
         const row = JSON.parse('{"__proto__":{"source":"canonical"},"value":"safe"}') as RawJson;
         ws.emit({
             t: "snapshot",
@@ -1728,7 +1791,7 @@ describe("createChardbClient — wire round-trip", () => {
         const ws = fakeWebSocket();
         await welcome(ws);
         const subscriptions = Array.from({ length: 16 }, (_, index) =>
-            c.subscribe(`queries.ts#aggregate-${index}`, {}, () => {})
+            c.subscribe(q(`queries.ts#aggregate-${index}`), {}, () => {})
         );
         const fullRows = stringRowsAtBytes(512 * 1_024);
         for (let subId = 1; subId <= 16; subId++) {
@@ -1742,13 +1805,13 @@ describe("createChardbClient — wire round-trip", () => {
         await flush();
         expect(c.state).toBe("open");
 
-        expect(captureCdbError(() => c.subscribe("queries.ts#aggregate-over", {}, () => {}))).toMatchObject({
+        expect(captureCdbError(() => c.subscribe(q("queries.ts#aggregate-over"), {}, () => {}))).toMatchObject({
             code: "CDB_RATE_LIMITED",
         });
         expect(c.state).toBe("open");
 
         subscriptions[0]?.unsubscribe();
-        const released = c.subscribe("queries.ts#aggregate-released", {}, () => {});
+        const released = c.subscribe(q("queries.ts#aggregate-released"), {}, () => {});
         ws.emit({
             t: "snapshot",
             subId: SubId(17),
@@ -1770,7 +1833,7 @@ describe("createChardbClient — wire round-trip", () => {
         for (let index = 0; index < 18; index++) {
             const subId = index + 1;
             seen.set(subId, []);
-            c.subscribe(`queries.ts#aggregate-atomic-${index}`, {}, rows => seen.get(subId)?.push(rows));
+            c.subscribe(q(`queries.ts#aggregate-atomic-${index}`), {}, rows => seen.get(subId)?.push(rows));
         }
         const fullRows = stringRowsAtBytes(512 * 1_024);
         for (let subId = 1; subId <= 15; subId++) {
@@ -1834,14 +1897,14 @@ describe("createChardbClient — wire round-trip", () => {
         const ws = fakeWebSocket();
         await welcome(ws);
         const seen: RawJson[][] = [];
-        c.subscribe("queries.ts#bounded-snapshot", {}, rows => seen.push([...rows]));
+        c.subscribe(q("queries.ts#bounded-snapshot"), {}, rows => seen.push([...rows]));
         const boundaryRows = Array.from({ length: 4_096 }, (_, index) => ({ id: index }));
         ws.emit({ t: "snapshot", subId: SubId(1), cookie: Cookie("c-test:rows-boundary"), rows: boundaryRows });
         await flush();
         expect(c.state).toBe("open");
         expect(seen.at(-1)).toHaveLength(4_096);
 
-        const pendingMutation = c.mutate("mutations.ts#pending-at-row-overflow", {}).catch(error => error);
+        const pendingMutation = c.mutate(m("mutations.ts#pending-at-row-overflow"), {}).catch(error => error);
         ws.emit({
             t: "snapshot",
             subId: SubId(1),
@@ -1867,7 +1930,7 @@ describe("createChardbClient — wire round-trip", () => {
         const ws = fakeWebSocket();
         await welcome(ws);
         const seen: RawJson[][] = [];
-        c.subscribe("queries.ts#bounded-snapshot-bytes", {}, rows => seen.push([...rows]));
+        c.subscribe(q("queries.ts#bounded-snapshot-bytes"), {}, rows => seen.push([...rows]));
         const exact = "x".repeat(512 * 1_024 - 4);
         ws.emit({ t: "snapshot", subId: SubId(1), cookie: Cookie("c-test:bytes-boundary"), rows: [exact] });
         await flush();
@@ -1893,7 +1956,7 @@ describe("createChardbClient — wire round-trip", () => {
         const ws = fakeWebSocket();
         await welcome(ws);
         const seen: RawJson[][] = [];
-        c.subscribe("queries.ts#bounded-patches", {}, rows => seen.push([...rows]));
+        c.subscribe(q("queries.ts#bounded-patches"), {}, rows => seen.push([...rows]));
         ws.emit({
             t: "poke",
             cookie: Cookie("c-test:patch-boundary"),
@@ -1909,7 +1972,7 @@ describe("createChardbClient — wire round-trip", () => {
         expect(seen).toHaveLength(1);
         expect(seen[0]).toHaveLength(4_096);
 
-        const pendingMutation = c.mutate("mutations.ts#pending-at-patch-overflow", {}).catch(error => error);
+        const pendingMutation = c.mutate(m("mutations.ts#pending-at-patch-overflow"), {}).catch(error => error);
         ws.emit({
             t: "poke",
             cookie: Cookie("c-test:patch-over"),
@@ -1934,7 +1997,7 @@ describe("createChardbClient — wire round-trip", () => {
         const ws = fakeWebSocket();
         await welcome(ws);
         const seen: RawJson[][] = [];
-        c.subscribe("queries.ts#bounded-batch", {}, rows => seen.push([...rows]));
+        c.subscribe(q("queries.ts#bounded-batch"), {}, rows => seen.push([...rows]));
         ws.emit({
             t: "poke",
             cookie: Cookie("c-test:batch-count-over"),
@@ -1988,11 +2051,11 @@ describe("createChardbClient — wire round-trip", () => {
         await flush();
         const ws = fakeWebSocket();
         await welcome(ws);
-        c.subscribe("queries.ts#first-patched", {}, rows => {
+        c.subscribe(q("queries.ts#first-patched"), {}, rows => {
             if (rows.length > 0) throw new Error("first listener failed");
         });
         const secondSeen: RawJson[][] = [];
-        c.subscribe("queries.ts#second-patched", {}, rows => secondSeen.push([...rows]));
+        c.subscribe(q("queries.ts#second-patched"), {}, rows => secondSeen.push([...rows]));
 
         ws.emit({
             t: "poke",
@@ -2014,7 +2077,7 @@ describe("createChardbClient — wire round-trip", () => {
         const ws = fakeWebSocket();
         await welcome(ws);
         const seen: unknown[][] = [];
-        c.subscribe("queries.ts#listMessages", {}, rows => seen.push([...rows]));
+        c.subscribe(q("queries.ts#listMessages"), {}, rows => seen.push([...rows]));
         await flush();
 
         ws.emit({
@@ -2060,7 +2123,7 @@ describe("createChardbClient — wire round-trip", () => {
         const ws = fakeWebSocket();
         await welcome(ws);
         const seen: unknown[][] = [];
-        const subscription = c.subscribe("queries.ts#listMessages", {}, rows => seen.push([...rows]));
+        const subscription = c.subscribe(q("queries.ts#listMessages"), {}, rows => seen.push([...rows]));
         await flush();
 
         subscription.unsubscribe();
@@ -2098,7 +2161,7 @@ describe("createChardbClient — wire round-trip", () => {
         const ws = fakeWebSocket();
         await welcome(ws);
         const seen: unknown[][] = [];
-        c.subscribe("queries.ts#listMessages", {}, rows => seen.push([...rows]));
+        c.subscribe(q("queries.ts#listMessages"), {}, rows => seen.push([...rows]));
         await flush();
 
         ws.failNextSend = true;
@@ -2141,7 +2204,7 @@ describe("createChardbClient — wire round-trip", () => {
         const ws = fakeWebSocket();
         await welcome(ws);
         let subscriptionNotifications = 0;
-        c.subscribe("queries.ts#listMessages", {}, () => subscriptionNotifications++);
+        c.subscribe(q("queries.ts#listMessages"), {}, () => subscriptionNotifications++);
         await flush();
 
         ws.onmessage?.({ data: JSON.stringify({ t: "snapshot", subId: 1, cookie: "c-1:1" }) });
@@ -2157,11 +2220,11 @@ describe("createChardbClient — wire round-trip", () => {
         try {
             await flush();
             const ws = fakeWebSocket();
-            await expect(c.mutate("invalid-ref", {})).rejects.toBeInstanceOf(TypeError);
+            await expect(c.mutate(m("invalid-ref"), {})).rejects.toBeInstanceOf(TypeError);
             expect(timers.scheduledDelays()).toHaveLength(0);
             expect(ws.sent.map(raw => (JSON.parse(raw) as Up).t)).toEqual(["hello"]);
 
-            const admitted = c.mutate("mutations.ts#after-invalid-ref", {}).catch(error => error);
+            const admitted = c.mutate(m("mutations.ts#after-invalid-ref"), {}).catch(error => error);
             expect(timers.scheduledDelays()).toHaveLength(1);
             expect(ws.sent.map(raw => (JSON.parse(raw) as Up).t)).toEqual(["hello"]);
             c.close();
@@ -2207,7 +2270,7 @@ describe("createChardbClient — wire round-trip", () => {
                 },
             });
 
-            await expect(c.mutate("invalid-ref", accessorObject)).rejects.toBeInstanceOf(TypeError);
+            await expect(c.mutate(m("invalid-ref"), accessorObject)).rejects.toBeInstanceOf(TypeError);
             for (const args of [
                 -0,
                 Number.POSITIVE_INFINITY,
@@ -2219,7 +2282,7 @@ describe("createChardbClient — wire round-trip", () => {
                 accessorObject,
                 accessorArray,
             ] as unknown as RawJson[]) {
-                await expect(c.mutate("mutations.ts#invalid-json", args)).rejects.toMatchObject({
+                await expect(c.mutate(m("mutations.ts#invalid-json"), args)).rejects.toMatchObject({
                     code: "CDB_INVALID_ARGS",
                     retryable: false,
                 });
@@ -2230,7 +2293,7 @@ describe("createChardbClient — wire round-trip", () => {
 
             const nullPrototypeArgs = Object.create(null) as Record<string, RawJson>;
             nullPrototypeArgs.value = "accepted";
-            const admitted = c.mutate("mutations.ts#after-invalid-json", nullPrototypeArgs).catch(error => error);
+            const admitted = c.mutate(m("mutations.ts#after-invalid-json"), nullPrototypeArgs).catch(error => error);
             expect(timers.scheduledDelays()).toHaveLength(1);
             expect(sentMutations(ws)).toEqual([
                 expect.objectContaining({
@@ -2254,35 +2317,35 @@ describe("createChardbClient — wire round-trip", () => {
             const ws = fakeWebSocket();
             const exactCount = c
                 .mutate(
-                    "mutations.ts#exact-argument-count",
+                    m("mutations.ts#exact-argument-count"),
                     Array.from({ length: 2_048 }, () => [null])
                 )
                 .catch(error => error);
-            const exactDepth = c.mutate("mutations.ts#exact-argument-depth", nestedJson(99)).catch(error => error);
+            const exactDepth = c.mutate(m("mutations.ts#exact-argument-depth"), nestedJson(99)).catch(error => error);
             const exactEmptyDepth = c
-                .mutate("mutations.ts#exact-empty-argument-depth", nestedEmptyJson(99))
+                .mutate(m("mutations.ts#exact-empty-argument-depth"), nestedEmptyJson(99))
                 .catch(error => error);
             const exactBytes = c
-                .mutate("mutations.ts#exact-argument-bytes", { value: "é".repeat(262_138) })
+                .mutate(m("mutations.ts#exact-argument-bytes"), { value: "é".repeat(262_138) })
                 .catch(error => error);
             expect(timers.scheduledDelays()).toHaveLength(4);
             expect(ws.sent.map(raw => (JSON.parse(raw) as Up).t)).toEqual(["hello"]);
 
             await expect(
                 c.mutate(
-                    "mutations.ts#too-many-arguments",
+                    m("mutations.ts#too-many-arguments"),
                     Array.from({ length: 2_048 }, (_, index) => (index === 0 ? [null, null] : [null]))
                 )
             ).rejects.toMatchObject({ code: "CDB_INVALID_ARGS", retryable: false });
-            await expect(c.mutate("mutations.ts#too-deep-arguments", nestedJson(100))).rejects.toMatchObject({
+            await expect(c.mutate(m("mutations.ts#too-deep-arguments"), nestedJson(100))).rejects.toMatchObject({
                 code: "CDB_INVALID_ARGS",
                 retryable: false,
             });
-            await expect(c.mutate("mutations.ts#too-deep-empty-arguments", nestedEmptyJson(100))).rejects.toMatchObject(
-                { code: "CDB_INVALID_ARGS", retryable: false }
-            );
             await expect(
-                c.mutate("mutations.ts#too-many-argument-bytes", { value: "é".repeat(262_139) })
+                c.mutate(m("mutations.ts#too-deep-empty-arguments"), nestedEmptyJson(100))
+            ).rejects.toMatchObject({ code: "CDB_INVALID_ARGS", retryable: false });
+            await expect(
+                c.mutate(m("mutations.ts#too-many-argument-bytes"), { value: "é".repeat(262_139) })
             ).rejects.toMatchObject({ code: "CDB_INVALID_ARGS", retryable: false });
             expect(timers.scheduledDelays()).toHaveLength(4);
             expect(ws.sent.map(raw => (JSON.parse(raw) as Up).t)).toEqual(["hello"]);
@@ -2316,19 +2379,19 @@ describe("createChardbClient — wire round-trip", () => {
             await flush();
             const ws = fakeWebSocket();
             const pending = Array.from({ length: 32 }, (_, index) =>
-                c.mutate("mutations.ts#held-for-argument-order", { index }).catch(error => error)
+                c.mutate(m("mutations.ts#held-for-argument-order"), { index }).catch(error => error)
             );
             expect(timers.scheduledDelays()).toHaveLength(32);
 
-            await expect(c.mutate("invalid-ref", { value: "é".repeat(262_139) })).rejects.toBeInstanceOf(TypeError);
+            await expect(c.mutate(m("invalid-ref"), { value: "é".repeat(262_139) })).rejects.toBeInstanceOf(TypeError);
             await expect(
-                c.mutate("mutations.ts#oversized-at-cap", { value: "é".repeat(262_139) })
+                c.mutate(m("mutations.ts#oversized-at-cap"), { value: "é".repeat(262_139) })
             ).rejects.toMatchObject({ code: "CDB_INVALID_ARGS", retryable: false });
-            await expect(c.mutate("mutations.ts#too-deep-at-cap", nestedJson(100))).rejects.toMatchObject({
+            await expect(c.mutate(m("mutations.ts#too-deep-at-cap"), nestedJson(100))).rejects.toMatchObject({
                 code: "CDB_INVALID_ARGS",
                 retryable: false,
             });
-            await expect(c.mutate("mutations.ts#valid-at-cap", {})).rejects.toMatchObject({
+            await expect(c.mutate(m("mutations.ts#valid-at-cap"), {})).rejects.toMatchObject({
                 code: "CDB_RATE_LIMITED",
                 retryable: true,
             });
@@ -2350,15 +2413,15 @@ describe("createChardbClient — wire round-trip", () => {
             await flush();
             const ws = fakeWebSocket();
             const queued = Array.from({ length: 32 }, (_, index) =>
-                c.mutate("mutations.ts#queued", { index }).catch(error => error)
+                c.mutate(m("mutations.ts#queued"), { index }).catch(error => error)
             );
             expect(ws.sent.map(raw => (JSON.parse(raw) as Up).t)).toEqual(["hello"]);
             expect(timers.scheduledDelays()).toHaveLength(32);
 
-            await expect(c.mutate("invalid-ref-at-cap", {})).rejects.toBeInstanceOf(TypeError);
+            await expect(c.mutate(m("invalid-ref-at-cap"), {})).rejects.toBeInstanceOf(TypeError);
             expect(ws.sent.map(raw => (JSON.parse(raw) as Up).t)).toEqual(["hello"]);
             expect(timers.scheduledDelays()).toHaveLength(32);
-            await expect(c.mutate("mutations.ts#limited", {})).rejects.toMatchObject({
+            await expect(c.mutate(m("mutations.ts#limited"), {})).rejects.toMatchObject({
                 code: "CDB_RATE_LIMITED",
                 retryable: true,
             });
@@ -2383,7 +2446,7 @@ describe("createChardbClient — wire round-trip", () => {
                 ],
             });
             await expect(queued[0]).resolves.toEqual({ settled: true });
-            const afterSuccess = c.mutate("mutations.ts#after-success", {}).catch(error => error);
+            const afterSuccess = c.mutate(m("mutations.ts#after-success"), {}).catch(error => error);
             expect(sentMutations(ws)).toHaveLength(33);
             expect(timers.scheduledDelays()).toHaveLength(32);
 
@@ -2406,13 +2469,13 @@ describe("createChardbClient — wire round-trip", () => {
                 ],
             });
             await expect(queued[1]).resolves.toMatchObject({ code: "CDB_CROSS_PARTITION" });
-            const afterFailure = c.mutate("mutations.ts#after-failure", {}).catch(error => error);
+            const afterFailure = c.mutate(m("mutations.ts#after-failure"), {}).catch(error => error);
             expect(sentMutations(ws)).toHaveLength(34);
             expect(timers.scheduledDelays()).toHaveLength(32);
 
             c.close();
             await Promise.all([...queued, afterSuccess, afterFailure]);
-            await expect(c.mutate("mutations.ts#after-close-cap", {})).rejects.toMatchObject({
+            await expect(c.mutate(m("mutations.ts#after-close-cap"), {})).rejects.toMatchObject({
                 code: "CDB_STREAM_ABORTED",
             });
         } finally {
@@ -2429,26 +2492,26 @@ describe("createChardbClient — wire round-trip", () => {
             const ws = fakeWebSocket();
             await welcome(ws);
             const pending = Array.from({ length: 31 }, (_, index) =>
-                c.mutate("mutations.ts#held", { index }).catch(error => error)
+                c.mutate(m("mutations.ts#held"), { index }).catch(error => error)
             );
             expect(timers.scheduledDelays()).toHaveLength(31);
 
             ws.failNextSend = true;
-            await expect(c.mutate("mutations.ts#send-failure-cap", {})).rejects.toMatchObject({
+            await expect(c.mutate(m("mutations.ts#send-failure-cap"), {})).rejects.toMatchObject({
                 code: "CDB_STREAM_ABORTED",
             });
             expect(timers.scheduledDelays()).toHaveLength(31);
-            const admitted = c.mutate("mutations.ts#after-send-failure-cap", {}).catch(error => error);
+            const admitted = c.mutate(m("mutations.ts#after-send-failure-cap"), {}).catch(error => error);
             expect(timers.scheduledDelays()).toHaveLength(32);
             expect(sentMutations(ws)).toHaveLength(32);
-            await expect(c.mutate("mutations.ts#limited-before-timeout", {})).rejects.toMatchObject({
+            await expect(c.mutate(m("mutations.ts#limited-before-timeout"), {})).rejects.toMatchObject({
                 code: "CDB_RATE_LIMITED",
             });
 
             timers.runDelay(1_000);
             await expect(pending[0]).resolves.toMatchObject({ code: "CDB_MUTATION_OUTCOME_UNKNOWN" });
             expect(timers.scheduledDelays()).toHaveLength(31);
-            const afterTimeout = c.mutate("mutations.ts#after-timeout-cap", {}).catch(error => error);
+            const afterTimeout = c.mutate(m("mutations.ts#after-timeout-cap"), {}).catch(error => error);
             expect(timers.scheduledDelays()).toHaveLength(32);
             expect(sentMutations(ws)).toHaveLength(33);
 
@@ -2468,7 +2531,7 @@ describe("createChardbClient — wire round-trip", () => {
             const first = fakeWebSocket();
             await welcome(first);
             const pending = Array.from({ length: 32 }, (_, index) =>
-                c.mutate("mutations.ts#reconnect-cap", { index }).catch(error => error)
+                c.mutate(m("mutations.ts#reconnect-cap"), { index }).catch(error => error)
             );
             const original = sentMutations(first);
             expect(original).toHaveLength(32);
@@ -2482,7 +2545,7 @@ describe("createChardbClient — wire round-trip", () => {
             const resent = sentMutations(reconnected);
             expect(resent).toEqual(original);
             expect(timers.scheduledDelays()).toHaveLength(32);
-            await expect(c.mutate("mutations.ts#reconnect-limited", {})).rejects.toMatchObject({
+            await expect(c.mutate(m("mutations.ts#reconnect-limited"), {})).rejects.toMatchObject({
                 code: "CDB_RATE_LIMITED",
             });
             expect(sentMutations(reconnected)).toHaveLength(32);
@@ -2503,7 +2566,7 @@ describe("createChardbClient — wire round-trip", () => {
                 ],
             });
             await expect(pending[0]).resolves.toBeNull();
-            const replacement = c.mutate("mutations.ts#reconnect-replacement", {}).catch(error => error);
+            const replacement = c.mutate(m("mutations.ts#reconnect-replacement"), {}).catch(error => error);
             expect(sentMutations(reconnected)).toHaveLength(33);
             expect(sentMutations(reconnected).at(-1)?.mutId).not.toBe(settled.mutId);
             expect(timers.scheduledDelays()).toHaveLength(32);
@@ -2525,8 +2588,8 @@ describe("createChardbClient — wire round-trip", () => {
             await welcome(first);
             const subscriptionArgs: Record<string, RawJson> = { value: "subscription-original" };
             const mutationArgs: Record<string, RawJson> = { value: "mutation-original" };
-            c.subscribe("queries.ts#owned-reconnect", subscriptionArgs, () => {});
-            const mutation = c.mutate("mutations.ts#owned-reconnect", mutationArgs).catch(error => error);
+            c.subscribe(q("queries.ts#owned-reconnect"), subscriptionArgs, () => {});
+            const mutation = c.mutate(m("mutations.ts#owned-reconnect"), mutationArgs).catch(error => error);
             const originalSub = first.sent.find(raw => (JSON.parse(raw) as Up).t === "sub");
             const originalMutation = first.sent.find(raw => (JSON.parse(raw) as Up).t === "mut");
             if (!originalSub || !originalMutation) throw new Error("expected initial owned requests");
@@ -2560,7 +2623,7 @@ describe("createChardbClient — wire round-trip", () => {
         await flush();
         const ws = fakeWebSocket();
         await welcome(ws);
-        const promise = c.mutate<{ id: string }>("src/api.ts#post", { body: "hi" });
+        const promise = c.mutate(m<RawJson, { id: string }>("src/api.ts#post"), { body: "hi" });
         await flush();
         const mutSent = ws.sent.map(r => JSON.parse(r) as Up).find(m => m.t === "mut");
         if (!mutSent || mutSent.t !== "mut") throw new Error("expected Up.mut");
@@ -2581,7 +2644,7 @@ describe("createChardbClient — wire round-trip", () => {
         await welcome(ws);
         const timeoutSpy = spyOnClearTimeout();
         try {
-            const mutation = c.mutate("src/api.ts#post", {});
+            const mutation = c.mutate(m("src/api.ts#post"), {});
             await flush();
             const sent = ws.sent.map(raw => JSON.parse(raw) as Up).find(message => message.t === "mut");
             if (!sent || sent.t !== "mut") throw new Error("expected Up.mut");
@@ -2604,7 +2667,7 @@ describe("createChardbClient — wire round-trip", () => {
         await flush();
         const ws = fakeWebSocket();
         await welcome(ws);
-        const promise = c.mutate("src/api.ts#post", {});
+        const promise = c.mutate(m("src/api.ts#post"), {});
         await flush();
         const mutSent = ws.sent.map(r => JSON.parse(r) as Up).find(m => m.t === "mut");
         if (!mutSent || mutSent.t !== "mut") throw new Error("expected Up.mut");
@@ -2641,7 +2704,7 @@ describe("createChardbClient — wire round-trip", () => {
         await welcome(ws);
         const timeoutSpy = spyOnClearTimeout();
         try {
-            const mutation = c.mutate("src/api.ts#post", {});
+            const mutation = c.mutate(m("src/api.ts#post"), {});
             await flush();
             const sent = ws.sent.map(raw => JSON.parse(raw) as Up).find(message => message.t === "mut");
             if (!sent || sent.t !== "mut") throw new Error("expected Up.mut");
@@ -2677,7 +2740,7 @@ describe("createChardbClient — wire round-trip", () => {
         const timeoutSpy = spyOnClearTimeout();
         try {
             first.failNextSend = true;
-            const mutation = c.mutate("src/api.ts#post", {});
+            const mutation = c.mutate(m("src/api.ts#post"), {});
             await expect(mutation).rejects.toMatchObject({ code: "CDB_STREAM_ABORTED", retryable: true });
             expect(timeoutSpy.calls).toHaveLength(1);
 
@@ -2698,7 +2761,7 @@ describe("createChardbClient — wire round-trip", () => {
         const ws = fakeWebSocket();
         await welcome(ws);
         let rejectionCount = 0;
-        const mutationError = c.mutate("src/api.ts#post", {}).catch(error => {
+        const mutationError = c.mutate(m("src/api.ts#post"), {}).catch(error => {
             rejectionCount++;
             return error;
         });
@@ -2732,7 +2795,7 @@ describe("createChardbClient — wire round-trip", () => {
             await flush();
             const first = fakeWebSocket();
             await welcome(first);
-            const mutation = c.mutate("src/api.ts#post", { body: "once" });
+            const mutation = c.mutate(m("src/api.ts#post"), { body: "once" });
             await flush();
             const firstSend = first.sent.map(raw => JSON.parse(raw) as Up).find(message => message.t === "mut");
             if (!firstSend || firstSend.t !== "mut") throw new Error("expected first Up.mut");
@@ -2767,8 +2830,10 @@ describe("createChardbClient — wire round-trip", () => {
         const ws = fakeWebSocket();
         await welcome(ws);
         const seen: Array<{ readonly rows: unknown[]; readonly state: string }> = [];
-        c.subscribe<{ id: string }>("queries.ts#listMessages", { organizationId: "org-1" }, (rows, state) =>
-            seen.push({ rows: [...rows], state: state ?? "missing" })
+        c.subscribe(
+            q<RawJson, { id: string }[]>("queries.ts#listMessages"),
+            { organizationId: "org-1" },
+            (rows, state) => seen.push({ rows: [...rows], state: state ?? "missing" })
         );
         await flush();
         // A patch cannot promote a pending subscription before its first
@@ -2857,7 +2922,7 @@ describe("createChardbClient — wire round-trip", () => {
             const ws = fakeWebSocket();
             await welcome(ws);
             const states: string[] = [];
-            c.subscribe("queries.ts#shardBackoff", { organizationId: "org-1" }, (_rows, state) => {
+            c.subscribe(q("queries.ts#shardBackoff"), { organizationId: "org-1" }, (_rows, state) => {
                 states.push(state ?? "missing");
             });
             await flush();
@@ -2907,7 +2972,7 @@ describe("createChardbClient — wire round-trip", () => {
             await flush();
             const first = fakeWebSocket();
             await welcome(first);
-            const subscription = c.subscribe("queries.ts#shardCleanup", { organizationId: "org-1" }, () => {});
+            const subscription = c.subscribe(q("queries.ts#shardCleanup"), { organizationId: "org-1" }, () => {});
             await flush();
             first.emit({ t: "mustRefetch", subIds: [SubId(1)], reason: "shardsChanged" });
             await flush();
@@ -2916,7 +2981,7 @@ describe("createChardbClient — wire round-trip", () => {
             expect(timers.scheduledDelays()).toEqual([]);
             expect(sentSubscriptions(first)).toHaveLength(1);
 
-            c.subscribe("queries.ts#shardReconnect", { organizationId: "org-2" }, () => {});
+            c.subscribe(q("queries.ts#shardReconnect"), { organizationId: "org-2" }, () => {});
             first.emit({ t: "mustRefetch", subIds: [SubId(2)], reason: "shardsChanged" });
             await flush();
             expect(timers.scheduledDelays()).toEqual([100]);
@@ -2940,7 +3005,7 @@ describe("createChardbClient — wire round-trip", () => {
         await flush();
         const ws = fakeWebSocket();
         await welcome(ws);
-        const subscription = c.subscribe("queries.ts#listMessages", { organizationId: "org-1" }, (_rows, state) => {
+        const subscription = c.subscribe(q("queries.ts#listMessages"), { organizationId: "org-1" }, (_rows, state) => {
             if (state === "refetching") subscription.unsubscribe();
         });
         await flush();
@@ -2965,8 +3030,10 @@ describe("createChardbClient — wire round-trip", () => {
         const ws = fakeWebSocket();
         await welcome(ws);
         const seen: Array<{ readonly rows: unknown[]; readonly state: string }> = [];
-        c.subscribe<{ id: string }>("queries.ts#listMessages", { organizationId: "org-1" }, (rows, state) =>
-            seen.push({ rows: [...rows], state: state ?? "missing" })
+        c.subscribe(
+            q<RawJson, { id: string }[]>("queries.ts#listMessages"),
+            { organizationId: "org-1" },
+            (rows, state) => seen.push({ rows: [...rows], state: state ?? "missing" })
         );
         await flush();
         ws.emit({
@@ -3000,7 +3067,7 @@ describe("createChardbClient — wire round-trip", () => {
                 const ws = fakeWebSocket();
                 await welcome(ws);
                 const seen: Array<{ readonly rows: RawJson[]; readonly state: string }> = [];
-                c.subscribe("queries.ts#retryable", { organizationId: "org-1" }, (rows, state) => {
+                c.subscribe(q("queries.ts#retryable"), { organizationId: "org-1" }, (rows, state) => {
                     seen.push({ rows, state: state ?? "missing" });
                 });
                 const cookie = Cookie(`c-retryable:${code}`);
@@ -3040,7 +3107,7 @@ describe("createChardbClient — wire round-trip", () => {
             const ws = fakeWebSocket();
             await welcome(ws);
             const states: string[] = [];
-            c.subscribe("queries.ts#retry-backoff", {}, (_rows, state) => states.push(state ?? "missing"));
+            c.subscribe(q("queries.ts#retry-backoff"), {}, (_rows, state) => states.push(state ?? "missing"));
             ws.emit({
                 t: "snapshot",
                 subId: SubId(1),
@@ -3085,7 +3152,7 @@ describe("createChardbClient — wire round-trip", () => {
             await flush();
             const ws = fakeWebSocket();
             await welcome(ws);
-            const subscription = c.subscribe("queries.ts#unsubscribe-in-retry", {}, (_rows, state) => {
+            const subscription = c.subscribe(q("queries.ts#unsubscribe-in-retry"), {}, (_rows, state) => {
                 if (state === "refetching") subscription.unsubscribe();
             });
             ws.emit(subscriptionError("CDB_CATALOG_UNAVAILABLE"));
@@ -3106,7 +3173,7 @@ describe("createChardbClient — wire round-trip", () => {
             await flush();
             const ws = fakeWebSocket();
             await welcome(ws);
-            const subscription = c.subscribe("queries.ts#unsubscribe-scheduled-retry", {}, () => {});
+            const subscription = c.subscribe(q("queries.ts#unsubscribe-scheduled-retry"), {}, () => {});
             ws.emit(subscriptionError("CDB_RATE_LIMITED"));
             await flush();
             expect(timers.scheduledDelays()).toEqual([100]);
@@ -3128,7 +3195,7 @@ describe("createChardbClient — wire round-trip", () => {
             const ws = fakeWebSocket();
             await welcome(ws);
             const states: string[] = [];
-            c.subscribe("queries.ts#close-in-retry", {}, (_rows, state) => {
+            c.subscribe(q("queries.ts#close-in-retry"), {}, (_rows, state) => {
                 states.push(state ?? "missing");
                 if (state === "refetching") c.close();
             });
@@ -3152,7 +3219,7 @@ describe("createChardbClient — wire round-trip", () => {
             await flush();
             const first = fakeWebSocket();
             await welcome(first);
-            c.subscribe("queries.ts#retry-reconnect", {}, () => {});
+            c.subscribe(q("queries.ts#retry-reconnect"), {}, () => {});
             first.emit(subscriptionError("CDB_SHARD_UNAVAILABLE"));
             await flush();
             expect(timers.scheduledDelays()).toEqual([100]);
@@ -3186,7 +3253,7 @@ describe("createChardbClient — wire round-trip", () => {
             const first = fakeWebSocket();
             await welcome(first);
             const seen: Array<{ readonly rows: RawJson[]; readonly state: string }> = [];
-            c.subscribe("queries.ts#terminal-error", {}, (rows, state) => {
+            c.subscribe(q("queries.ts#terminal-error"), {}, (rows, state) => {
                 seen.push({ rows, state: state ?? "missing" });
             });
             first.emit({
@@ -3282,7 +3349,7 @@ describe("createChardbClient — wire round-trip", () => {
             const first = fakeWebSocket();
             await welcome(first, "c-session-retry:1");
             const seen: Array<{ readonly rows: RawJson[]; readonly state: string }> = [];
-            c.subscribe("queries.ts#session-retry", {}, (rows, state) => {
+            c.subscribe(q("queries.ts#session-retry"), {}, (rows, state) => {
                 seen.push({ rows, state: state ?? "missing" });
             });
             first.emit({
@@ -3324,8 +3391,8 @@ describe("createChardbClient — wire round-trip", () => {
         const ws = fakeWebSocket();
         await welcome(ws);
         const states: string[] = [];
-        c.subscribe("queries.ts#session-terminal", {}, (_rows, state) => states.push(state ?? "missing"));
-        const mutation = c.mutate("mutations.ts#session-terminal", {});
+        c.subscribe(q("queries.ts#session-terminal"), {}, (_rows, state) => states.push(state ?? "missing"));
+        const mutation = c.mutate(m("mutations.ts#session-terminal"), {});
         ws.emit({
             t: "error",
             code: "CDB_FORBIDDEN",
@@ -3370,8 +3437,10 @@ describe("createChardbClient — wire round-trip", () => {
             const ws1 = fakeWebSocket();
             ws1.emit({ t: "welcome", protocolV: PROTOCOL_V, baseCookie: Cookie("c-1:42"), region: "test" });
             const seen: Array<{ readonly rows: unknown[]; readonly state: string }> = [];
-            c.subscribe<{ id: string }>("queries.ts#listMessages", { organizationId: "org-1" }, (rows, state) =>
-                seen.push({ rows: [...rows], state: state ?? "missing" })
+            c.subscribe(
+                q<RawJson, { id: string }[]>("queries.ts#listMessages"),
+                { organizationId: "org-1" },
+                (rows, state) => seen.push({ rows: [...rows], state: state ?? "missing" })
             );
             ws1.emit({ t: "snapshot", subId: SubId(1), cookie: Cookie("c-1:43"), rows: [{ id: "stale" }] });
             await flush();
@@ -3416,8 +3485,10 @@ describe("createChardbClient — wire round-trip", () => {
             let socket = fakeWebSocket();
             await welcome(socket, "c-1:42");
             const seen: Array<{ readonly rows: unknown[]; readonly state: string }> = [];
-            c.subscribe<{ id: string }>("queries.ts#listMessages", { organizationId: "org-1" }, (rows, state) =>
-                seen.push({ rows: [...rows], state: state ?? "missing" })
+            c.subscribe(
+                q<RawJson, { id: string }[]>("queries.ts#listMessages"),
+                { organizationId: "org-1" },
+                (rows, state) => seen.push({ rows: [...rows], state: state ?? "missing" })
             );
             socket.emit({ t: "snapshot", subId: SubId(1), cookie: Cookie("c-1:43"), rows: [{ id: "stale" }] });
             await flush();
@@ -3479,7 +3550,7 @@ describe("createChardbClient — wire round-trip", () => {
             const ws1 = fakeWebSocket();
             await welcome(ws1, "c-1:42");
             const retainedStates: string[] = [];
-            c.subscribe("queries.ts#retained", { organizationId: "org-1" }, (_rows, state) =>
+            c.subscribe(q("queries.ts#retained"), { organizationId: "org-1" }, (_rows, state) =>
                 retainedStates.push(state ?? "missing")
             );
             ws1.emit({ t: "snapshot", subId: SubId(1), cookie: Cookie("c-1:43"), rows: [{ id: "stale" }] });
@@ -3488,7 +3559,7 @@ describe("createChardbClient — wire round-trip", () => {
             ws1.close();
             await flush();
             let offlineNotifications = 0;
-            c.subscribe("queries.ts#offline", { organizationId: "org-1" }, () => {
+            c.subscribe(q("queries.ts#offline"), { organizationId: "org-1" }, () => {
                 offlineNotifications += 1;
             });
             timers.runDelay(250);
@@ -3525,10 +3596,10 @@ describe("createChardbClient — wire round-trip", () => {
             await welcome(ws1, "c-1:42");
             const statesA: string[] = [];
             const statesB: string[] = [];
-            c.subscribe("queries.ts#a", { organizationId: "org-1" }, (_rows, state) =>
+            c.subscribe(q("queries.ts#a"), { organizationId: "org-1" }, (_rows, state) =>
                 statesA.push(state ?? "missing")
             );
-            c.subscribe("queries.ts#b", { organizationId: "org-1" }, (_rows, state) =>
+            c.subscribe(q("queries.ts#b"), { organizationId: "org-1" }, (_rows, state) =>
                 statesB.push(state ?? "missing")
             );
             ws1.emit({ t: "snapshot", subId: SubId(1), cookie: Cookie("c-1:43"), rows: [{ id: "a" }] });
@@ -3588,9 +3659,13 @@ describe("createChardbClient — wire round-trip", () => {
             await flush();
             const ws1 = fakeWebSocket();
             await welcome(ws1, "c-1:42");
-            const subscription = c.subscribe("queries.ts#listMessages", { organizationId: "org-1" }, (_rows, state) => {
-                if (state === "refetching") subscription.unsubscribe();
-            });
+            const subscription = c.subscribe(
+                q("queries.ts#listMessages"),
+                { organizationId: "org-1" },
+                (_rows, state) => {
+                    if (state === "refetching") subscription.unsubscribe();
+                }
+            );
             ws1.emit({ t: "snapshot", subId: SubId(1), cookie: Cookie("c-1:43"), rows: [{ id: "stale" }] });
             await flush();
 
@@ -3618,7 +3693,7 @@ describe("createChardbClient — wire round-trip", () => {
             const ws1 = fakeWebSocket();
             await welcome(ws1, "c-1:42");
             const states: string[] = [];
-            c.subscribe("queries.ts#listMessages", { organizationId: "org-1" }, (_rows, state) => {
+            c.subscribe(q("queries.ts#listMessages"), { organizationId: "org-1" }, (_rows, state) => {
                 states.push(state ?? "missing");
                 if (state === "refetching") c.close();
             });
@@ -3644,12 +3719,12 @@ describe("createChardbClient — wire round-trip", () => {
         const ws = fakeWebSocket();
         let subscriptionNotifications = 0;
         const subscriptionStates: string[] = [];
-        c.subscribe("queries.ts#listMessages", {}, (_rows, state) => {
+        c.subscribe(q("queries.ts#listMessages"), {}, (_rows, state) => {
             subscriptionNotifications++;
             subscriptionStates.push(state ?? "missing");
         });
         let rejectionCount = 0;
-        const mutationError = c.mutate("src/api.ts#post", {}).catch(error => {
+        const mutationError = c.mutate(m("src/api.ts#post"), {}).catch(error => {
             rejectionCount++;
             return error;
         });
@@ -3681,9 +3756,9 @@ describe("createChardbClient — wire round-trip", () => {
             const lateError = ws.onerror;
             const lateClose = ws.onclose;
             const seen: RawJson[][] = [];
-            c.subscribe("queries.ts#late-terminal", {}, rows => seen.push(rows));
+            c.subscribe(q("queries.ts#late-terminal"), {}, rows => seen.push(rows));
             let rejectionCount = 0;
-            const mutationError = c.mutate("mutations.ts#late-terminal", {}).catch(error => {
+            const mutationError = c.mutate(m("mutations.ts#late-terminal"), {}).catch(error => {
                 rejectionCount += 1;
                 return error;
             });
@@ -3740,7 +3815,7 @@ describe("createChardbClient — wire round-trip", () => {
             const ws = fakeWebSocket();
             await welcome(ws);
             const seen: RawJson[][] = [];
-            c.subscribe("queries.ts#error-backoff", {}, rows => seen.push(rows));
+            c.subscribe(q("queries.ts#error-backoff"), {}, rows => seen.push(rows));
             const staleOpen = ws.onopen;
             const staleMessage = ws.onmessage;
             const staleError = ws.onerror;
@@ -3800,7 +3875,7 @@ describe("createChardbClient — wire round-trip", () => {
             const first = fakeWebSocket();
             await welcome(first);
             const seen: RawJson[][] = [];
-            c.subscribe("queries.ts#held-reconnect", {}, rows => seen.push(rows));
+            c.subscribe(q("queries.ts#held-reconnect"), {}, rows => seen.push(rows));
             const staleOpen = first.onopen;
             const staleMessage = first.onmessage;
             const staleError = first.onerror;
@@ -3862,7 +3937,7 @@ describe("createChardbClient — wire round-trip", () => {
             const first = fakeWebSocket();
             await welcome(first);
             const seen: RawJson[][] = [];
-            c.subscribe("queries.ts#stale-socket", {}, rows => seen.push(rows));
+            c.subscribe(q("queries.ts#stale-socket"), {}, rows => seen.push(rows));
             const staleOpen = first.onopen;
             const staleMessage = first.onmessage;
             const staleError = first.onerror;
@@ -3907,7 +3982,7 @@ describe("createChardbClient — wire round-trip", () => {
         await flush();
         const timeoutSpy = spyOnClearTimeout();
         try {
-            const mutations = [c.mutate("src/api.ts#one", {}), c.mutate("src/api.ts#two", {})];
+            const mutations = [c.mutate(m("src/api.ts#one"), {}), c.mutate(m("src/api.ts#two"), {})];
             c.close();
             await Promise.all(
                 mutations.map(mutation => expect(mutation).rejects.toMatchObject({ code: "CDB_STREAM_ABORTED" }))
@@ -3926,7 +4001,7 @@ describe("createChardbClient — wire round-trip", () => {
         await flush();
         const timeoutSpy = spyOnClearTimeout();
         try {
-            await expect(c.mutate("src/api.ts#after-close", {})).rejects.toMatchObject({
+            await expect(c.mutate(m("src/api.ts#after-close"), {})).rejects.toMatchObject({
                 code: "CDB_STREAM_ABORTED",
                 retryable: true,
             });

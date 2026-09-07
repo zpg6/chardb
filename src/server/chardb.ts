@@ -50,6 +50,14 @@ export interface ChardbFactoryInput<
     readonly authBasePath?: MountChardbOptions["authBasePath"];
     /** Immutable migration journal packaged with every Worker and Durable Object class. */
     readonly migrations?: ChardbMigrationJournal;
+    /** Generated client modules, one path per language, relative to the project root. */
+    readonly clients?: ChardbClients;
+}
+
+/** Where `chardb generate` writes each language's typed handle module. */
+export interface ChardbClients {
+    readonly rust?: string;
+    readonly ts?: string;
 }
 
 /** Hono app plus the bindings and classes required by the Worker module. */
@@ -74,8 +82,9 @@ export type ChardbApp<TPlugins extends readonly BetterAuthPlugin[], TSchema exte
     readonly auth: ChardbAuth<TPlugins>;
     readonly ownership: "organization" | "user";
     readonly schema: TSchema & SynthesizedAuthSchema<TPlugins>;
-    /** The registered handles passed as `api`, as `chardb api rust` reads them. */
+    /** The registered handles passed as `api`, as `chardb generate` reads them. */
     readonly api: Readonly<Record<string, unknown>>;
+    readonly clients: ChardbClients;
     readonly DB: typeof DB;
     readonly Cdb: typeof Cdb;
     readonly Catalog: typeof Catalog;
@@ -226,6 +235,7 @@ export function chardb<
         auth,
         ownership: input.ownership,
         api: refsValue ?? {},
+        clients: input.clients ?? {},
         DB: ConfiguredDB,
         Cdb: ConfiguredCdb,
         Catalog: ConfiguredCatalog,

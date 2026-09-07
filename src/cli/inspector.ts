@@ -1,4 +1,4 @@
-/** Fresh-process inspection shared by `migrations generate` and `api rust`. */
+/** Fresh-process inspection shared by `migrations generate` and `generate`. */
 
 import { fileURLToPath } from "node:url";
 import type { CliCommandResult, CliContext } from "./context.ts";

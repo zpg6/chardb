@@ -36,7 +36,21 @@ The `chardb-client` crate lives in `rust/chardb` and provides blocking and runti
 
 Typed `Query<Arguments, Row>` and `Mutation<Arguments, Output>` handles bind each server reference to its Serde request and response types. The default build includes both client styles and Rustls; optional features select native roots or JSON Schema introspection.
 
-Run `bunx @chardb/core api rust --out <file>` in the app directory to write those handles and their Serde types from the registered queries and tables: one `Serialize` struct per `args` validator (any Standard JSON Schema validator, such as zod 4), one `Deserialize` row struct per selected table, and a `Query` or `Mutation` const per handle. Mutation results and handles without an `args` validator use `serde_json::Value`. Row types come from one sample compile per query, so a query whose table depends on its arguments gets the first branch's row. Add `--check` in CI to fail when the committed module is stale.
+Declare where each module goes on the app, then run `bunx @chardb/core generate` in the app directory:
+
+```ts src/worker.ts
+export const app = chardb({
+  ownership: "organization",
+  auth,
+  schema,
+  api,
+  clients: { rust: "src/chardb_api.rs", ts: "src/chardb_api.ts" },
+});
+```
+
+The Rust module holds those handles and their Serde types from the registered queries and tables: one `Serialize` struct per `args` validator (any Standard JSON Schema validator, such as zod 4), one `Deserialize` row struct per selected table, and a `Query` or `Mutation` const per handle. Mutation results and handles without an `args` validator use `serde_json::Value`. Row types come from one sample compile per query, so a query whose table depends on its arguments gets the first branch's row. `migrations generate` refreshes every declared module once the migration is written and fails with its own message if it cannot. The modules are compared byte for byte, so exclude them from formatters, and add `--check` in CI to fail when a committed module is stale.
+
+The `ts` module exports the same handles as `QueryHandle` and `MutationHandle` constants with their argument and row types, for TypeScript consumers outside the Vite build that pass them to `createChardbClient`.
 
 The Rust client supports registered live queries, mutations, reconnects, mutation replay, and auth refresh. Your application must obtain the initial Better Auth JWT and provide refreshed JWTs when the client requests one. The crate does not perform sign-in. It also does not implement files, vectors, `workers-rs`, or `wasm32` transport.
 

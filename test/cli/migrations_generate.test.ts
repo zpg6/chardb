@@ -24,10 +24,20 @@ interface FakeProject {
     }[];
 }
 
-function fakeProject(results: readonly string[] = [`${stableJson(SCAFFOLD_INITIAL_SNAPSHOT)}\n`]): FakeProject {
+const NO_CLIENTS = "chardb: no clients configured\n";
+
+/** The schema inspections a run made, without the client refresh that follows each write. */
+const schemaInspections = (project: FakeProject) =>
+    project.invocations.filter(invocation => invocation.args[1] === "__migrations-inspect");
+
+function fakeProject(
+    results: readonly string[] = [`${stableJson(SCAFFOLD_INITIAL_SNAPSHOT)}\n`],
+    refresh = { exitCode: 0, stdout: NO_CLIENTS, stderr: "" }
+): FakeProject {
     const files = new Map<string, string>([
         ["/project/src/schema.ts", "schema"],
         ["/project/src/auth.ts", "auth"],
+        ["/project/src/worker.ts", "worker"],
     ]);
     const output: string[] = [];
     const invocations: FakeProject["invocations"] = [];
@@ -59,6 +69,11 @@ function fakeProject(results: readonly string[] = [`${stableJson(SCAFFOLD_INITIA
         selfCommand: { executable: "/bun", args: ["/chardb"] },
         async runCommand(invocation) {
             invocations.push(invocation);
+            if (invocation.args[1] === "__generate-inspect") {
+                // Client modules are refreshed only once the migration artifacts are on disk.
+                expect(files.has("/project/src/migrations.ts")).toBe(true);
+                return refresh;
+            }
             const stdout = results[call] ?? results[0] ?? "";
             call++;
             return { exitCode: 0, stdout, stderr: "" };
@@ -107,12 +122,17 @@ describe("initial migration generation", () => {
         const project = fakeProject();
         await runMigrationsGenerate(project.ctx, { name: "initial_schema" });
 
-        expect(project.invocations).toHaveLength(2);
-        for (const invocation of project.invocations) {
+        expect(project.invocations.map(invocation => invocation.args[1])).toEqual([
+            "__migrations-inspect",
+            "__migrations-inspect",
+            "__generate-inspect",
+        ]);
+        for (const invocation of schemaInspections(project)) {
             expect(invocation.args).toEqual(["/chardb", "__migrations-inspect", "initial_schema", "1", "-"]);
             expect(invocation.timeoutMs).toBe(15_000);
             expect(invocation.maxOutputBytes).toBe(16 * 1_024 * 1_024 + 1_024);
         }
+        expect(project.invocations[2]?.args).toEqual(["/chardb", "__generate-inspect"]);
         const versionOne = project.files.get("/project/src/migrations/v1.ts") ?? "";
         const journal = project.files.get("/project/src/migrations.ts") ?? "";
         const snapshot = project.files.get("/project/src/migrations/v1.json") ?? "";
@@ -124,6 +144,15 @@ describe("initial migration generation", () => {
         expect(versionOne).not.toContain("drizzle-orm");
         expect(journal).toContain("defineMigrations([\n  initialSchema,\n])");
         expect(snapshot).toBe(`${stableJson(SCAFFOLD_INITIAL_SNAPSHOT)}\n`);
+        expect(project.output).toEqual(["chardb: generated immutable migration v1 (initial_schema)\n", NO_CLIENTS]);
+    });
+
+    test("keeps the written migration and says so when the client refresh fails", async () => {
+        const project = fakeProject(undefined, { exitCode: 1, stdout: "", stderr: "src/worker.ts: boom\n" });
+        await expect(runMigrationsGenerate(project.ctx, { name: "initial_schema" })).rejects.toThrow(
+            "the migration was written, but its client modules were not: src/worker.ts: boom"
+        );
+        expect(project.files.has("/project/src/migrations.ts")).toBe(true);
         expect(project.output).toEqual(["chardb: generated immutable migration v1 (initial_schema)\n"]);
     });
 
@@ -259,7 +288,8 @@ describe("initial migration generation", () => {
 
         await runMigrationsGenerate(project.ctx, { name: "add_message_note" });
 
-        expect(project.invocations).toHaveLength(2);
+        expect(schemaInspections(project)).toHaveLength(2);
+        expect(project.invocations.at(-1)?.args).toEqual(["/chardb", "__generate-inspect"]);
         expect(project.invocations[0]?.args).toEqual([
             "/chardb",
             "__migrations-inspect",
@@ -275,7 +305,10 @@ describe("initial migration generation", () => {
         expect(versionTwo).not.toContain('from "../schema.ts"');
         expect(versionTwo).not.toContain('from "../auth.ts"');
         expect(project.files.get("/project/src/migrations.ts")).toContain("migrationV2,");
-        expect(project.output).toEqual(["chardb: generated immutable additive migration v2 (add_message_note)\n"]);
+        expect(project.output).toEqual([
+            "chardb: generated immutable additive migration v2 (add_message_note)\n",
+            NO_CLIENTS,
+        ]);
     });
 
     test("appends arbitrary sequential additive versions through v4", async () => {
@@ -299,7 +332,7 @@ describe("initial migration generation", () => {
         await runMigrationsGenerate(project.ctx, { name: "add_summary" });
         await runMigrationsGenerate(project.ctx, { name: "add_caption" });
 
-        expect(project.invocations.map(invocation => invocation.args.slice(-3))).toEqual([
+        expect(schemaInspections(project).map(invocation => invocation.args.slice(-3))).toEqual([
             ["add_note", "2", SCAFFOLD_INITIAL_SNAPSHOT.digest],
             ["add_note", "2", SCAFFOLD_INITIAL_SNAPSHOT.digest],
             ["add_summary", "3", v2.digest],
@@ -323,8 +356,11 @@ describe("initial migration generation", () => {
         );
         expect(project.output).toEqual([
             "chardb: generated immutable additive migration v2 (add_note)\n",
+            NO_CLIENTS,
             "chardb: generated immutable additive migration v3 (add_summary)\n",
+            NO_CLIENTS,
             "chardb: generated immutable additive migration v4 (add_caption)\n",
+            NO_CLIENTS,
         ]);
     });
 

@@ -1,6 +1,7 @@
 import { type ChardbBindingSelect, type ChardbSelectPlanV1, createBindingSelect } from "./binding-plan.ts";
 import { snapshotMutationArguments, snapshotSubscriptionArguments } from "./client/serialized-json.ts";
 import { CdbError, isCdbErrorCode } from "./errors.ts";
+import { type MutationHandle, type QueryHandle, handleRef } from "./handles.ts";
 import type { RawJson } from "./types.ts";
 import { rawJsonResult } from "./util/raw_json.ts";
 
@@ -56,18 +57,6 @@ export interface ChardbBinding {
     executeMutation(request: ChardbBindingMutationRequest): Promise<ChardbBindingMutationResponse>;
     /** Optional for compatibility with bindings created before structured selects were added. */
     executePlan?(request: ChardbBindingPlanRequest): Promise<ChardbBindingQueryResponse>;
-}
-
-interface QueryHandle<TArgs, TResult> {
-    readonly __chardbKind: "query";
-    readonly __chardbRef: { toString(): string };
-    (ctx: never, args: TArgs): Promise<TResult>;
-}
-
-interface MutationHandle<TArgs, TResult> {
-    readonly __chardbKind: "mutation";
-    readonly __chardbRef: { toString(): string };
-    (ctx: never, args: TArgs): TResult;
 }
 
 export interface ChardbBindingMutationOptions {
@@ -156,21 +145,6 @@ function mutationResult(response: unknown): RawJson {
         throw bindingInvariant("DB binding returned a malformed mutation response");
     }
     return rawJsonResult(envelope.result, "DB binding mutation result");
-}
-
-function handleRef(handle: unknown, kind: "query" | "mutation"): string {
-    if (
-        typeof handle !== "function" ||
-        (handle as { readonly __chardbKind?: unknown }).__chardbKind !== kind ||
-        typeof (handle as { readonly __chardbRef?: { toString?: unknown } }).__chardbRef?.toString !== "function"
-    ) {
-        throw new TypeError(`chardb: ${kind} requires a define${kind === "query" ? "Query" : "Mutation"} handle`);
-    }
-    const ref = (handle as unknown as { readonly __chardbRef: { toString(): string } }).__chardbRef.toString();
-    if (ref.length === 0 || ref.length > 1_024 || !ref.includes("#")) {
-        throw new TypeError(`chardb: ${kind} handle has an invalid stable ref`);
-    }
-    return ref;
 }
 
 /**

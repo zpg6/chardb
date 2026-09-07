@@ -4,6 +4,7 @@ import type { CliCommandResult, CliContext } from "../context.ts";
 import { runInspection } from "../inspector.ts";
 import { renderAdditiveMigrationArtifacts, renderInitialMigrationArtifacts } from "../migration-artifacts.ts";
 import { diffAdditiveSchemaSnapshots } from "../schema-snapshot-diff.ts";
+import { WORKER_ENTRY, runGenerate } from "./generate.ts";
 
 const MIGRATION_NAME = /^[a-z0-9][a-z0-9_-]{0,127}$/;
 
@@ -160,6 +161,17 @@ async function readStoredHistory(
     return Object.freeze({ latest: previous, journal: storedJournal });
 }
 
+/** Client modules describe the schema too; a project without a Worker has none to refresh. */
+async function refreshClients(ctx: CliContext): Promise<void> {
+    if (!(await ctx.exists(`${ctx.cwd}/${WORKER_ENTRY}`))) return;
+    try {
+        await runGenerate(ctx, { check: false });
+    } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(`the migration was written, but its client modules were not: ${detail}`);
+    }
+}
+
 export async function runMigrationsGenerate(ctx: CliContext, options: MigrationsGenerateOptions): Promise<void> {
     if (!MIGRATION_NAME.test(options.name)) {
         throw new Error("migration name must match [a-z0-9][a-z0-9_-]{0,127}");
@@ -191,6 +203,7 @@ export async function runMigrationsGenerate(ctx: CliContext, options: Migrations
             { path: journalPath, contents: artifacts.journal },
         ]);
         ctx.stdout(`chardb: generated immutable migration v1 (${options.name})\n`);
+        await refreshClients(ctx);
         return;
     }
 
@@ -212,4 +225,5 @@ export async function runMigrationsGenerate(ctx: CliContext, options: Migrations
         { path: journalPath, contents: artifacts.journal, expectedContents: history.journal },
     ]);
     ctx.stdout(`chardb: generated immutable additive migration v${nextVersion} (${options.name})\n`);
+    await refreshClients(ctx);
 }
