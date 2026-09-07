@@ -62,7 +62,7 @@ export const messages = cdbTable(
 | --- | --- |
 | [`@chardb/core`](https://www.npmjs.com/package/@chardb/core) | Worker runtime, browser client, native binding client, CLI, files, vectors, Vite plugin, and shared types |
 | [`@chardb/react`](https://www.npmjs.com/package/@chardb/react) | React client |
-| [`chardb-client`](https://crates.io/crates/chardb-client) | Rust client |
+| [`chardb`](https://crates.io/crates/chardb) | Rust client |
 
 ## License
 
