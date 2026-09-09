@@ -6,7 +6,7 @@ CharDB turns a Better Auth user or organization into the ownership, authorizatio
 
 Documentation lives at [docs.chardb.dev](https://docs.chardb.dev). The first release is experimental. Read [Plan ahead](https://docs.chardb.dev/plan-ahead) before storing data you cannot recreate.
 
-## Build one
+## Install
 
 Bun 1.2.22 or newer and Node.js 22 or newer.
 
@@ -19,7 +19,7 @@ bun run dev
 
 The [quickstart](https://docs.chardb.dev/quickstart) walks through the generated app.
 
-## Own rows
+## The basics
 
 Every table names its owner and what each role may do with each column. This is the schema the initializer writes.
 
@@ -56,13 +56,13 @@ export const messages = cdbTable(
 
 `forOrg(auth)` adds `organizationId` and fills it from the verified session on every insert. `forUser(auth)` and `forOrgUser(auth)` do the same for a user, or for a member inside an organization. [Ownership](https://docs.chardb.dev/ownership) has the details.
 
-## Packages
+## Ecosystem
 
 | Package | Purpose |
 | --- | --- |
-| `@chardb/core` | Worker runtime, browser client, native binding client, CLI, files, vectors, Vite plugin, and shared types |
-| `@chardb/react` | React client |
-| `chardb-client` | Rust client |
+| [`@chardb/core`](https://www.npmjs.com/package/@chardb/core) | Worker runtime, browser client, native binding client, CLI, files, vectors, Vite plugin, and shared types |
+| [`@chardb/react`](https://www.npmjs.com/package/@chardb/react) | React client |
+| [`chardb`](https://crates.io/crates/chardb) | Rust client |
 
 ## License
 
