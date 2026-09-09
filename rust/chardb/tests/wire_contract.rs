@@ -1,4 +1,4 @@
-use chardb_client::wire::{decode_down, decode_up, encode_up, CdbErrorCode, Down, RefetchReason};
+use chardb::wire::{decode_down, decode_up, encode_up, CdbErrorCode, Down, RefetchReason};
 use serde::Deserialize;
 
 #[derive(Deserialize)]

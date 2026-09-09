@@ -1,6 +1,6 @@
 use std::{env, time::Duration};
 
-use chardb_client::{Client, ClientConfig, Mutation, Query, SubscriptionEvent};
+use chardb::{Client, ClientConfig, Mutation, Query, SubscriptionEvent};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize)]

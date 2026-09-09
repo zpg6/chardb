@@ -3,7 +3,7 @@
 use std::{net::TcpListener, sync::Arc, thread, time::Duration};
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use chardb_client::{wire::decode_up, Client, ClientConfig};
+use chardb::{wire::decode_up, Client, ClientConfig};
 use rustls::{
     pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
     ClientConfig as RustlsClientConfig, RootCertStore, ServerConfig, ServerConnection, StreamOwned,

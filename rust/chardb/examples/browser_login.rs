@@ -1,6 +1,6 @@
 use std::{env, time::Duration};
 
-use chardb_client::{browser_login::BrowserLogin, Client, ClientConfig};
+use chardb::{browser_login::BrowserLogin, Client, ClientConfig};
 use oauth2::{ureq, TokenResponse};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

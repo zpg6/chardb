@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use chardb_client::{
+use chardb::{
     wire::{decode_up, RefetchReason, Up},
     AsyncClient, Client, ClientConfig, ConnectionState, ErrorKind, Mutation, Query,
     SubscriptionEvent,
@@ -288,7 +288,7 @@ fn connect_failure_is_bounded_and_reported() {
     ) else {
         panic!("connection unexpectedly succeeded");
     };
-    assert_eq!(error.kind(), chardb_client::ErrorKind::Transport);
+    assert_eq!(error.kind(), chardb::ErrorKind::Transport);
     assert!(started.elapsed() < std::time::Duration::from_secs(2));
 }
 
