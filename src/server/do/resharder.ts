@@ -15,12 +15,14 @@
  */
 
 import { DurableObject } from "cloudflare:workers";
-import { CdbError } from "../../errors.ts";
+import { CdbError, isCdbError, rehydrateCdbRpcError } from "../../errors.ts";
 import type { TableSpec } from "../../reshard/triggers.ts";
 import type { RawJson } from "../../types.ts";
 import { stableJson } from "../../util/canonical.ts";
 import { VSHARD_COUNT } from "../../vshard.ts";
 import { withChardbLoopbacks } from "../loopback.ts";
+import type { CatalogTopologyOperation } from "./catalog-topology-operation-store.ts";
+import type { CatalogTopology } from "./catalog.ts";
 import {
     CDB_FILE_RESHARD_PAGE_SIZE,
     type CdbFileReshardDrainCursor,
@@ -28,7 +30,8 @@ import {
     type CdbReshardFileRecord,
     type CdbReshardOrganizationTombstone,
 } from "./cdb-file-reshard-store.ts";
-import { canonicalRegisteredTableSpecs } from "./cdb-reshard-identity-store.ts";
+import { CDB_AUTO_SPLIT_BYTES, type CdbHeadroomRpc, nextShardId, suggestSplit } from "./cdb-headroom.ts";
+import { canonicalRegisteredTableSpecs, packagedReshardTableSpecs } from "./cdb-reshard-identity-store.ts";
 import { isKnownReshardTailTable } from "./cdb-reshard-relational.ts";
 import type { TailTransaction } from "./cdb-reshard-runtime.ts";
 import type { SplitOpLogEntry } from "./cdb-split-oplog-store.ts";
@@ -88,10 +91,32 @@ CREATE TABLE IF NOT EXISTS migration_schema_identity (
   schema_epoch INTEGER NOT NULL CHECK (schema_epoch > 0),
   schema_digest TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS headroom_shards (
+  shard_id TEXT PRIMARY KEY,
+  bytes INTEGER NOT NULL CHECK (bytes >= 0),
+  judged_bytes INTEGER NOT NULL DEFAULT 0 CHECK (judged_bytes >= 0),
+  mig_id TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS headroom_shards_inflight ON headroom_shards (mig_id IS NOT NULL) WHERE mig_id IS NOT NULL;
 ` as const;
 
-export const RESHARDER_AUTO_TRIGGER_SIZE_BYTES = 5 * 1024 * 1024 * 1024;
-export const RESHARDER_AUTO_TRIGGER_RPS = 800;
+const HEADROOM_MIG_PREFIX = "auto-";
+/** A shard is judged again only after its file grows this fraction of the mark past the last judgement. */
+const HEADROOM_GROWTH_DIVISOR = 4;
+const HEADROOM_PAGES_PER_TICK = 64;
+const HEADROOM_STEPS_PER_TICK = 32;
+const HEADROOM_RATE_LIMIT_WAIT_MS = 5_000;
+const HEADROOM_STALL_WAIT_MS = 15_000;
+const HEADROOM_WAIT_MS = 60_000;
+/** Errors that persist this long abort the move; a shorter outage only backs off. */
+const HEADROOM_ABORT_AFTER_MS = 30 * 60_000;
+
+interface HeadroomScan {
+    readonly shardId: string;
+    table: number;
+    afterRowid: number;
+    readonly vshards: Uint32Array;
+}
 
 /**
  * Named phases. The numeric values are persisted in `migration_state.phase`
@@ -154,6 +179,14 @@ interface CatalogReshardRpc {
         schemaEpoch: number;
         schemaDigest: string;
     }>;
+    topology(): Promise<CatalogTopology>;
+    beginDerivedTopologyOperation(args: {
+        migId: string;
+        destinationShard: string;
+        rangeLo: number;
+        rangeHi: number;
+        recoveryGeneration: number;
+    }): Promise<CatalogTopologyOperation>;
     cutover(args: {
         migId: string;
         lo: number;
@@ -680,6 +713,9 @@ export class Resharder extends DurableObject<ResharderEnv> {
         Promise<{ action: "aborted" | "resumed"; phase: ResharderPhase }>
     >();
     private readonly ensuredSourcePhases = new Set<string>();
+    private headroomScan: HeadroomScan | null = null;
+    private headroomErrorSince: number | null = null;
+    private readonly cdbNames = new Map<string, string>();
 
     constructor(state: DurableObjectState, env: ResharderEnv) {
         super(state, withChardbLoopbacks(env, state));
@@ -689,6 +725,274 @@ export class Resharder extends DurableObject<ResharderEnv> {
     /** Configured Workers override this so admission uses the packaged schema before Catalog takes a lease. */
     protected runtimeSchema(): Record<string, unknown> | null {
         return null;
+    }
+
+    /** SQLite bytes at which a shard is split automatically; `null` disables the governor. */
+    protected autoSplitBytes(): number | null {
+        return CDB_AUTO_SPLIT_BYTES;
+    }
+
+    /** Private Cdb push: one size sample per growth step once a shard passes the split mark. */
+    async reportShardSize(args: { readonly cdbId: string; readonly bytes: number }): Promise<void> {
+        if (
+            typeof args.cdbId !== "string" ||
+            args.cdbId.length < 1 ||
+            args.cdbId.length > 128 ||
+            !Number.isSafeInteger(args.bytes) ||
+            args.bytes < 0
+        ) {
+            invalidSplit("shard size report is invalid");
+        }
+        const mark = this.autoSplitBytes();
+        if (mark === null) return;
+        const shardId = await this.shardName(args.cdbId);
+        if (shardId === null) return;
+        adaptSqlStorage(this.ctx.storage.sql).exec(
+            `INSERT INTO headroom_shards (shard_id, bytes) VALUES (?, ?)
+             ON CONFLICT (shard_id) DO UPDATE SET bytes = excluded.bytes`,
+            shardId,
+            args.bytes
+        );
+        if (args.bytes >= mark) await this.scheduleHeadroom(Date.now());
+    }
+
+    override async alarm(): Promise<void> {
+        const delay = await this.governHeadroom(Date.now());
+        if (delay !== null) await this.scheduleHeadroom(Date.now() + delay);
+    }
+
+    private async scheduleHeadroom(at: number): Promise<void> {
+        const current = await this.ctx.storage.getAlarm();
+        if (current === null || at < current) await this.ctx.storage.setAlarm(at);
+    }
+
+    /** A Cdb knows only its durable id; every name it can carry is in the routing map or a past destination. */
+    private async shardName(cdbId: string): Promise<string | null> {
+        const namespace = this.env.CDB_SHARD;
+        if (!namespace) return null;
+        if (!this.cdbNames.has(cdbId)) {
+            const ranges = (await this.catalog().topology()).ranges;
+            for (const shardId of [...ranges.map(range => range.shardId), ...this.pastDestinations()]) {
+                this.cdbNames.set(namespace.idFromName(shardId).toString(), shardId);
+            }
+        }
+        return this.cdbNames.get(cdbId) ?? null;
+    }
+
+    private pastDestinations(): readonly string[] {
+        return adaptSqlStorage(this.ctx.storage.sql)
+            .all<{ dst_shard: string }>("SELECT DISTINCT dst_shard FROM migration_state")
+            .map(row => row.dst_shard);
+    }
+
+    /** One governor tick. Returns the delay before the next tick, or `null` when nothing is pending. */
+    private async governHeadroom(nowMs: number): Promise<number | null> {
+        const mark = this.autoSplitBytes();
+        const schema = this.runtimeSchema();
+        if (mark === null || !schema) return null;
+        try {
+            const delay = await this.governHeadroomOnce(mark, schema, nowMs);
+            this.headroomErrorSince = null;
+            return delay;
+        } catch (raw) {
+            const error = rehydrateCdbRpcError(raw);
+            const code = isCdbError(error) ? error.code : null;
+            if (code === "CDB_RATE_LIMITED") return HEADROOM_RATE_LIMIT_WAIT_MS;
+            if (code === "CDB_STALE_EPOCH" || code === "CDB_RESHARD_PHASE_MISMATCH") return HEADROOM_WAIT_MS;
+            this.headroomErrorSince ??= nowMs;
+            const failingFor = nowMs - this.headroomErrorSince;
+            const inflight = this.inflightAutoSplit();
+            if (inflight && failingFor >= HEADROOM_ABORT_AFTER_MS && this.readMigration(inflight.migId)) {
+                console.warn(`chardb headroom: aborting ${inflight.migId} after ${failingFor} ms of errors`, error);
+                await this.abort(inflight.migId).catch(() => {});
+            }
+            return Math.min(HEADROOM_WAIT_MS, Math.max(1_000, failingFor));
+        }
+    }
+
+    private inflightAutoSplit(): { readonly shardId: string; readonly migId: string } | null {
+        const row = adaptSqlStorage(this.ctx.storage.sql).one<{ shard_id: string; mig_id: string }>(
+            "SELECT shard_id, mig_id FROM headroom_shards WHERE mig_id IS NOT NULL"
+        );
+        return row ? { shardId: row.shard_id, migId: row.mig_id } : null;
+    }
+
+    private async governHeadroomOnce(
+        mark: number,
+        schema: Record<string, unknown>,
+        nowMs: number
+    ): Promise<number | null> {
+        const inflight = this.inflightAutoSplit();
+        if (inflight) return await this.driveAutoSplit(inflight.shardId, inflight.migId);
+        const sql = adaptSqlStorage(this.ctx.storage.sql);
+        const candidate = sql.one<{ shard_id: string; bytes: number }>(
+            `SELECT shard_id, bytes FROM headroom_shards
+             WHERE bytes >= ? AND bytes - judged_bytes >= ?
+             ORDER BY bytes DESC, shard_id ASC LIMIT 1`,
+            mark,
+            Math.floor(mark / HEADROOM_GROWTH_DIVISOR)
+        );
+        if (!candidate) {
+            this.headroomScan = null;
+            return null;
+        }
+        const clock = new RecoveryCoordinatorStore(sql).admissionClock();
+        if (clock.activeOperationId !== null) return HEADROOM_WAIT_MS;
+        const catalog = this.catalog();
+        const topology = await catalog.topology();
+        if (!topology.schemaActive) return HEADROOM_WAIT_MS;
+        const active = topology.activeOperation;
+        if (active) {
+            if (!active.migrationId.startsWith(HEADROOM_MIG_PREFIX) || this.readMigration(active.migrationId)) {
+                return HEADROOM_WAIT_MS;
+            }
+            // This governor claimed the lease and lost the start; release it instead of waiting forever.
+            await this.releaseClaim(active);
+            return 0;
+        }
+        const ranges = topology.ranges.filter(range => range.shardId === candidate.shard_id);
+        if (ranges.length === 0) {
+            sql.exec("DELETE FROM headroom_shards WHERE shard_id = ?", candidate.shard_id);
+            return 0;
+        }
+        const tables = packagedReshardTableSpecs(schema);
+        const scan =
+            this.headroomScan?.shardId === candidate.shard_id
+                ? this.headroomScan
+                : { shardId: candidate.shard_id, table: 0, afterRowid: 0, vshards: new Uint32Array(VSHARD_COUNT) };
+        this.headroomScan = scan;
+        const shard = this.shardStub(candidate.shard_id);
+        for (let page = 0; page < HEADROOM_PAGES_PER_TICK; page++) {
+            const spec = tables[scan.table];
+            if (!spec) break;
+            const result = await shard.readHeadroomPage({ table: spec.name, afterRowid: scan.afterRowid });
+            for (const [vshard, rows] of result.vshards) scan.vshards[vshard] = (scan.vshards[vshard] ?? 0) + rows;
+            if (result.nextRowid === null) {
+                scan.table++;
+                scan.afterRowid = 0;
+            } else {
+                scan.afterRowid = result.nextRowid;
+            }
+        }
+        if (scan.table < tables.length) return 0;
+        const move = suggestSplit(ranges, scan.vshards);
+        const destination = nextShardId([...topology.ranges.map(range => range.shardId), ...this.pastDestinations()]);
+        if (!move || !destination) {
+            this.headroomScan = null;
+            sql.exec("UPDATE headroom_shards SET judged_bytes = bytes WHERE shard_id = ?", candidate.shard_id);
+            console.warn(
+                `chardb headroom: ${candidate.shard_id} holds ${candidate.bytes} bytes but cannot split: ${
+                    destination ? "its rows sit in too few vshards" : "every shard must be named ShardDO_<n>"
+                }`
+            );
+            return null;
+        }
+        const migId = `${HEADROOM_MIG_PREFIX}${candidate.shard_id}-${nowMs}`;
+        const claim = await catalog.beginDerivedTopologyOperation({
+            migId,
+            destinationShard: destination,
+            rangeLo: move.lo,
+            rangeHi: move.hi,
+            recoveryGeneration: clock.generation,
+        });
+        if (
+            claim.status !== "active" ||
+            claim.migrationId !== migId ||
+            claim.sourceShard !== candidate.shard_id ||
+            claim.destinationShard !== destination ||
+            claim.rangeLo !== move.lo ||
+            claim.rangeHi !== move.hi
+        ) {
+            throw new CdbError({ code: "CDB_INVARIANT", message: "Catalog returned an invalid topology claim" });
+        }
+        this.headroomScan = null;
+        sql.exec(
+            "UPDATE headroom_shards SET mig_id = ?, judged_bytes = bytes WHERE shard_id = ?",
+            migId,
+            candidate.shard_id
+        );
+        await this.startSplit({
+            migId,
+            srcShard: claim.sourceShard,
+            dstShard: destination,
+            rangeLo: move.lo,
+            rangeHi: move.hi,
+            epochAtStart: claim.startEpoch,
+            tables,
+        });
+        console.info(
+            `chardb headroom: ${migId} moves [${move.lo}, ${move.hi}] (${move.rows} rows) from ${candidate.shard_id} to ${destination}`
+        );
+        return 0;
+    }
+
+    private async driveAutoSplit(shardId: string, migId: string): Promise<number> {
+        const sql = adaptSqlStorage(this.ctx.storage.sql);
+        if (!this.readMigration(migId)) {
+            const active = (await this.catalog().topology()).activeOperation;
+            if (active?.migrationId === migId) {
+                await this.releaseClaim(active).catch(error =>
+                    console.warn(`chardb headroom: ${migId} holds a lease this governor cannot release`, error)
+                );
+            }
+            if (this.activeStarts.has(migId)) await this.abort(migId).catch(() => {});
+            this.endAutoSplit(shardId, migId, "lost its start");
+            return 0;
+        }
+        for (let step = 0; step < HEADROOM_STEPS_PER_TICK; step++) {
+            const phase = this.readMigration(migId)?.phase;
+            if (phase === RESHARDER_PHASE.SOURCE_DRAINED || phase === RESHARDER_PHASE.ABORTED) {
+                this.endAutoSplit(shardId, migId, phase === RESHARDER_PHASE.ABORTED ? "aborted" : null);
+                return 0;
+            }
+            const written = sql.one<{ n: number }>("SELECT total_changes() AS n")?.n;
+            await this.runSplit(migId);
+            // Catching up the tail persists every step it takes; a step that wrote nothing is waiting on the
+            // organization-deletion barrier, which other shards clear on their own alarms.
+            if (
+                phase === RESHARDER_PHASE.TAIL_CAUGHT_UP &&
+                sql.one<{ n: number }>("SELECT total_changes() AS n")?.n === written
+            ) {
+                return HEADROOM_STALL_WAIT_MS;
+            }
+        }
+        return 0;
+    }
+
+    private endAutoSplit(shardId: string, migId: string, failure: string | null): void {
+        adaptSqlStorage(this.ctx.storage.sql).exec(
+            "UPDATE headroom_shards SET mig_id = NULL, judged_bytes = bytes WHERE shard_id = ? AND mig_id = ?",
+            shardId,
+            migId
+        );
+        if (failure) {
+            console.warn(
+                `chardb headroom: ${migId} ${failure}; ${shardId} is judged again after a quarter of the mark`
+            );
+        } else {
+            console.info(`chardb headroom: ${migId} completed`);
+        }
+    }
+
+    private releaseClaim(active: CatalogTopologyOperation): Promise<unknown> {
+        return this.catalog().abortTopologyOperation({
+            migId: active.migrationId,
+            sourceShard: active.sourceShard,
+            destinationShard: active.destinationShard,
+            rangeLo: active.rangeLo,
+            rangeHi: active.rangeHi,
+            startEpoch: active.startEpoch,
+            recoveryGeneration: new RecoveryCoordinatorStore(adaptSqlStorage(this.ctx.storage.sql)).admissionClock()
+                .generation,
+        });
+    }
+
+    private shardStub(shardId: string): CdbHeadroomRpc {
+        const namespace = this.env.CDB_SHARD;
+        if (!namespace) {
+            throw new CdbError({ code: "CDB_INVARIANT", message: "Resharder requires CDB_SHARD service binding" });
+        }
+        return namespace.get(namespace.idFromName(shardId)) as unknown as CdbHeadroomRpc;
     }
 
     async adminRecoveryAdmissionClock() {

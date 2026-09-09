@@ -94,6 +94,13 @@ import {
     assertUnusedVersionZeroReshardDestination,
 } from "./cdb-fresh-reshard-destination.ts";
 import {
+    CDB_AUTO_SPLIT_BYTES,
+    CDB_HEADROOM_REPORT_STEPS,
+    type HeadroomPage,
+    type ResharderHeadroomRpc,
+    readHeadroomPage,
+} from "./cdb-headroom.ts";
+import {
     CDB_LIVE_STORE_DDL,
     INVALIDATION_BASE_RETRY_MS,
     INVALIDATION_MAX_RETRY_MS,
@@ -174,6 +181,7 @@ import {
     type CdbReshardSplitIdentity,
     assertCdbReshardRangeIdentity,
     initializeCdbReshardIdentityStore,
+    packagedReshardTableSpecs,
 } from "./cdb-reshard-identity-store.ts";
 import { assertReshardSourceDomainDrained } from "./cdb-reshard-relational.ts";
 import {
@@ -300,6 +308,7 @@ export interface CdbRuntimeConfig<TSchema extends Record<string, unknown>> {
  * Cdb shard. Provisioned as `class_name = "Cdb"` by Wrangler migrations.
  */
 export class Cdb extends DurableObject<CdbEnv> {
+    private reportedSizeStep = -1;
     private readonly schemaMigrations: CdbSchemaMigrationStore;
     private readonly files: CdbFileRuntime;
     private readonly opLogRetention: CdbOpLogRetentionStore;
@@ -414,6 +423,11 @@ export class Cdb extends DurableObject<CdbEnv> {
 
     protected mutationSchema(): Record<string, unknown> {
         return {};
+    }
+
+    /** SQLite bytes at which this shard asks the Resharder for an automatic split; `null` disables it. */
+    protected autoSplitBytes(): number | null {
+        return CDB_AUTO_SPLIT_BYTES;
     }
 
     protected mutationManifest(): ChardbManifest {
@@ -1593,6 +1607,7 @@ export class Cdb extends DurableObject<CdbEnv> {
             } catch (error) {
                 failure ??= error;
             }
+            await this.reportShardSize();
         }
         if (failure) throw failure;
     }
@@ -1926,6 +1941,34 @@ export class Cdb extends DurableObject<CdbEnv> {
         if (abortForArmedRecoveryRestore(this.ctx, adaptSqlStorage(this.ctx.storage.sql))) return;
         if (new RecoveryAdmissionStore(adaptSqlStorage(this.ctx.storage.sql)).blocksBackgroundWork()) return;
         await this.maintainAlarmWork({ deliverVectors: true });
+    }
+
+    /** Private Resharder read of one page of a movable table, hashed to vshards here because SQLite cannot. */
+    readHeadroomPage(args: { readonly table: string; readonly afterRowid: number }): HeadroomPage {
+        try {
+            const spec = packagedReshardTableSpecs(this.mutationSchema()).find(table => table.name === args.table);
+            if (!spec) throw new CdbError({ code: "CDB_INVALID_ARGS", message: "headroom table is not movable" });
+            return readHeadroomPage(this.ctx.storage.sql, spec, args.afterRowid);
+        } catch (error) {
+            throwCdbRpcError(error);
+        }
+    }
+
+    /** Push one size sample per growth step once past the mark; runs on the alarm, never on a mutation response. */
+    private async reportShardSize(): Promise<void> {
+        const mark = this.autoSplitBytes();
+        const resharder = this.env.CDB_RESHARD;
+        if (mark === null || !resharder) return;
+        const bytes = this.ctx.storage.sql.databaseSize;
+        const step = Math.floor((bytes * CDB_HEADROOM_REPORT_STEPS) / mark);
+        if (!(bytes >= mark) || step === this.reportedSizeStep) return;
+        const sink = resharder.get(resharder.idFromName("global")) as unknown as ResharderHeadroomRpc;
+        try {
+            await sink.reportShardSize({ cdbId: this.ctx.id.toString(), bytes });
+            this.reportedSizeStep = step;
+        } catch {
+            // The next alarm reports again.
+        }
     }
 
     async adminRecoveryBookmark(args: { readonly atMs?: number }): Promise<{

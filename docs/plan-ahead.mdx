@@ -3,7 +3,7 @@ title: "Plan ahead"
 description: "Know CharDB's recovery, scale, and availability limits."
 ---
 
-CharDB is experimental. It has no production availability SLA, automatic regional failover, or automatic load-based resharding. Decide how you will recover data and when you will move a shard before either becomes urgent.
+CharDB is experimental. It has no production availability SLA, automatic regional failover, or load-based resharding. Decide how you will recover data and when you will move a shard before either becomes urgent.
 
 ## Take recovery points
 
@@ -33,6 +33,8 @@ Monitor CharDB error codes and business-level row counts for data whose absence 
 
 ## Leave shard headroom
 
-An organization or user is the placement and transaction boundary. CharDB can explicitly move a virtual-shard range, including its rows, file metadata, vector state, outboxes, and tombstones. It does not yet balance ranges from live load automatically.
+An organization or user is the placement and transaction boundary. Each shard reports its SQLite size to the Resharder once it passes 5 GiB, half of the Durable Object cap. The Resharder scans that shard's registered tables in pages, takes the prefix of its heaviest range that holds nearest half of those rows, and moves it, with its file metadata, vector state, outboxes, and tombstones, into the next `ShardDO_<n>`. It waits while a recovery point, a schema migration, or another movement is active. While an automatic move runs, those wait for it in turn, and writes on the source can see `CDB_RATE_LIMITED` if they outrun the capture log.
 
-Set owner-level size and traffic limits in the application. Watch latency and rate-limit errors, leave room for spikes, and move a range before a physical shard is full. Workloads that require automatic balancing, cross-partition transactions, operator-controlled regional failover, or a production availability SLA are outside the current release.
+A shard is judged again only after its file grows a further quarter of the mark. A move that fails, or a shard whose rows sit in too few vshards to split, is logged and waits the same way. Name every shard `ShardDO_<n>`; any other name turns automatic splits off. To stop a running move, abort it by its logged id with `chardb experimental shards abort`.
+
+Splits follow file size, not traffic. Set owner-level size and traffic limits in the application and watch latency and rate-limit errors. Workloads that require load-based balancing, cross-partition transactions, operator-controlled regional failover, or a production availability SLA are outside the current release.

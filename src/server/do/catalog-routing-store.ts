@@ -1,6 +1,6 @@
 import { CdbError } from "../../errors.ts";
 import { ShardId, type Vshard } from "../../types.ts";
-import { VshardMap } from "../../vshard.ts";
+import { VshardMap, type VshardRange } from "../../vshard.ts";
 import type { CatalogSql } from "./catalog-schema-store.ts";
 
 export interface CatalogCutoverRequest {
@@ -37,6 +37,10 @@ export class CatalogRoutingStore {
             shardId: this.map().routeVshard(vshard as Vshard),
             schemaEpoch: this.readSchemaEpoch(),
         };
+    }
+
+    listRanges(): readonly VshardRange[] {
+        return this.map().ranges_();
     }
 
     listShardIds(): readonly ShardId[] {

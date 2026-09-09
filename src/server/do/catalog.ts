@@ -30,7 +30,7 @@ import {
 } from "../../auth/jwks_cache.ts";
 import { CdbError, isCdbError, rehydrateCdbRpcError, throwCdbRpcError } from "../../errors.ts";
 import type { PrincipalId, RawJson, ShardId, TenantId } from "../../types.ts";
-import { VSHARD_COUNT, vshardOf } from "../../vshard.ts";
+import { VSHARD_COUNT, type VshardRange, vshardOf } from "../../vshard.ts";
 import { withChardbLoopbacks } from "../loopback.ts";
 import { readCurrentOwnerVectorPurgeStatus } from "../organization-deletion-status.ts";
 import { chardbResourceDescriptorsAt, isChardbVectorResourceDescriptor } from "../resource-descriptors.ts";
@@ -301,6 +301,13 @@ interface CatalogOrganizationDeletionBarrierRequest {
     readonly migId: string;
     readonly rangeLo: number;
     readonly rangeHi: number;
+}
+
+export interface CatalogTopology {
+    readonly ranges: readonly VshardRange[];
+    readonly activeOperation: CatalogTopologyOperation | null;
+    /** False while a schema migration is pending, which also refuses new topology operations. */
+    readonly schemaActive: boolean;
 }
 
 export class Catalog extends DurableObject<CatalogEnv> {
@@ -1220,6 +1227,15 @@ export class Catalog extends DurableObject<CatalogEnv> {
     /** Return each physical shard that owns at least one current vshard range. */
     async listShardIds(): Promise<readonly ShardId[]> {
         return this.routingStore.listShardIds();
+    }
+
+    /** Resharder read of the current range map, the one active range movement, and whether a split may start. */
+    async topology(): Promise<CatalogTopology> {
+        return await this.adminMigrationRpc(() => ({
+            ranges: this.routingStore.listRanges(),
+            activeOperation: new CatalogTopologyOperationStore(adaptSqlStorage(this.ctx.storage.sql)).active(),
+            schemaActive: this.readSchemaState().status === "active",
+        }));
     }
 
     async adminRecoveryInventory(args: { readonly armedBookmark?: string } = {}): Promise<{
