@@ -8,6 +8,8 @@
  * build.
  */
 
+import { type ViteResolvedConfigLike, clientGenerationHooks, runGenerate } from "./generate.ts";
+
 /**
  * Minimal vite Plugin shape used here; the full type comes from the user's
  * vite install. We avoid a hard `import type { Plugin } from "vite"` so the
@@ -22,8 +24,16 @@ interface VitePluginLike {
         id: string,
         options?: ViteTransformOptionsLike
     ): { code: string; map: null } | null;
+    configResolved?(config: ViteResolvedConfigLike): void;
+    configureServer?(): void;
+    watchChange?(id: string): void;
 }
 type Plugin = VitePluginLike;
+
+export interface ChardbPluginOptions {
+    /** Run `chardb generate` when the dev server starts and after source changes. Default true. */
+    readonly generate?: boolean;
+}
 
 interface ViteTransformContextLike {
     readonly environment?: { readonly name?: string };
@@ -63,11 +73,12 @@ interface SeenExport {
     readonly ref: string;
 }
 
-export function chardb(): Plugin {
+export function chardb(options: ChardbPluginOptions = {}): Plugin {
     const seenExports: SeenExport[] = [];
 
     return {
         name: "chardb",
+        ...(options.generate === false ? {} : clientGenerationHooks(runGenerate)),
         enforce: "pre",
         transform(code, id, transformOptions) {
             const moduleId = cleanModuleId(id);
