@@ -3,11 +3,11 @@ title: "Clients"
 description: "Connect from React or native Rust."
 ---
 
-CharDB includes a React client for browser applications and a native Rust client for services and command-line programs in this repository. Registry publication is still pending. Both use registered query and mutation handles rather than accepting SQL from the caller.
+CharDB includes a React client for browser applications and a native Rust client for services and command-line programs. Both use registered query and mutation handles rather than accepting SQL from the caller.
 
 ## React
 
-The React client lives in `packages/react` and is wired into the generated workspace. The npm package is not public yet.
+The React client is the `@chardb/react` package. Generated projects already depend on it.
 
 Configure the client with the same public URL that serves Better Auth and the CharDB Worker:
 

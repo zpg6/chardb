@@ -8,6 +8,10 @@
         "access": "public"
     },
     "homepage": "https://chardb.dev",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/zpg6/chardb.git"
+    },
     "packageManager": "bun@1.4.1",
     "engines": {
         "bun": ">=1.2.22",
