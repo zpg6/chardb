@@ -1,10 +1,14 @@
+import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { CdbError } from "@chardb/core";
-import { postMessage } from "../../src/server/api.ts";
+import { drizzle } from "drizzle-orm/bun-sqlite";
+import { deleteMessage, editMessage, postMessage } from "../../src/server/api.ts";
 import { auth } from "../../src/server/auth.ts";
+import { initialSchema } from "../../src/server/migrations/v1.ts";
 import { listMessages } from "../../src/server/queries.ts";
+import { messages } from "../../src/server/schema.ts";
 
 describe("tutorial Better Auth integration", () => {
     test("uses Better Auth's organization and JWT plugins", () => {
@@ -69,7 +73,8 @@ describe("tutorial Better Auth integration", () => {
         expect(app).toContain("db.auth.organization.setActive({ organizationId");
         expect(app).not.toContain("session.refetch");
         expect(app).toContain("db.useQuery(listMessages, { limit: 50 })");
-        expect(app).toContain("const mutate = db.useMutation(postMessage)");
+        expect(app).toContain("db.useMutation(postMessage)");
+        expect(app).toContain("<Messages key={activeOrganizationId}");
         expect(app).not.toContain("<ChardbProvider");
         expect(app).not.toContain("organizationId,\n                body");
         expect(app).not.toContain("DEMO_ORG_ID");
@@ -143,5 +148,50 @@ describe("tutorial organization flow", () => {
         }
         expect(error).toBeInstanceOf(CdbError);
         expect(error).toMatchObject({ code: "CDB_FORBIDDEN", retryable: false });
+    });
+});
+
+describe("tutorial message lifecycle", () => {
+    test("members can edit and delete their own rows, with organization isolation", () => {
+        const sqlite = new Database(":memory:");
+        try {
+            for (const statement of initialSchema.statements) sqlite.run(statement);
+            const raw = drizzle(sqlite, { schema: { messages } });
+            const context = (userId: string, tenantId = "org-1", role = "member") => {
+                const auth = { userId, tenantId, role, claims: {} };
+                return { db: raw, auth };
+            };
+            const args = { id: "m1", organizationId: "org-1" };
+            const denied = (attempt: () => unknown) =>
+                expect(attempt).toThrow(/missing or not yours|does not match the routed partition/);
+            postMessage(context("alice"), { ...args, body: "hello", clientCreatedAt: 1 });
+            expect(raw.select().from(messages).get()).toMatchObject({
+                authorId: "alice",
+                organizationId: "org-1",
+                body: "hello",
+            });
+            denied(() => editMessage(context("bob"), { ...args, body: "hijacked" }));
+            denied(() => deleteMessage(context("bob"), args));
+            denied(() => editMessage(context("alice", "org-2"), { ...args, body: "wrong org" }));
+            denied(() => deleteMessage(context("alice", "org-2"), args));
+            expect(raw.select().from(messages).get()?.body).toBe("hello");
+            expect(editMessage(context("alice"), { ...args, body: "edited" })).toEqual({ id: "m1" });
+            expect(raw.select().from(messages).get()?.body).toBe("edited");
+            expect(editMessage(context("bob", "org-1", "admin"), { ...args, body: "moderated" })).toEqual({ id: "m1" });
+            expect(raw.select().from(messages).get()?.body).toBe("moderated");
+            expect(deleteMessage(context("alice"), args)).toEqual({ id: "m1" });
+            denied(() => deleteMessage(context("alice"), args));
+            expect(raw.select().from(messages).all()).toEqual([]);
+        } finally {
+            sqlite.close();
+        }
+    });
+
+    test("validates edits before executing them", () => {
+        const validate = (editMessage as typeof editMessage & { __chardbValidateArgs(args: unknown): unknown })
+            .__chardbValidateArgs;
+        const key = { organizationId: "org-1", id: "m1" };
+        expect(validate({ ...key, body: "  edited  " })).toEqual({ ...key, body: "edited" });
+        for (const body of ["   ", "x".repeat(2_001)]) expect(() => validate({ ...key, body })).toThrow();
     });
 });

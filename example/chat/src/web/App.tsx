@@ -1,9 +1,9 @@
 import { createChardbReactClient } from "@chardb/react";
 import { type Organization, anonymousClient, jwtClient, organizationClient } from "better-auth/client/plugins";
 import { createAuthClient } from "better-auth/react";
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { uuidv7 } from "uuidv7";
-import { postMessage } from "../server/api.ts";
+import { deleteMessage, editMessage, postMessage } from "../server/api.ts";
 import { listMessages } from "../server/queries.ts";
 
 const db = createChardbReactClient({
@@ -16,6 +16,8 @@ const db = createChardbReactClient({
         }),
 });
 
+const time = new Intl.DateTimeFormat(undefined, { dateStyle: "short", timeStyle: "short" });
+
 let anonymousSignInRequest: ReturnType<typeof db.auth.signIn.anonymous> | undefined;
 
 function signInAnonymously() {
@@ -23,6 +25,33 @@ function signInAnonymously() {
         anonymousSignInRequest = undefined;
     });
     return anonymousSignInRequest;
+}
+
+function describe(cause: unknown): string {
+    return cause instanceof Error ? cause.message : String(cause);
+}
+
+/** One in-flight task at a time, with its error kept until the next run or a reset. */
+function useAction() {
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    // The lock is a ref: two clicks in one frame both see the pre-update `busy` state.
+    const running = useRef(false);
+    const run = async (task: () => Promise<unknown>) => {
+        if (running.current) return;
+        running.current = true;
+        setBusy(true);
+        setError(null);
+        try {
+            await task();
+        } catch (cause) {
+            setError(describe(cause));
+        } finally {
+            running.current = false;
+            setBusy(false);
+        }
+    };
+    return { busy, error, run, reset: () => setError(null) };
 }
 
 export function App() {
@@ -37,7 +66,7 @@ export function App() {
                 const result = await signInAnonymously();
                 if (active && result.error) setAuthError(result.error.message);
             } catch (cause) {
-                if (active) setAuthError(cause instanceof Error ? cause.message : String(cause));
+                if (active) setAuthError(describe(cause));
             }
         })();
         return () => {
@@ -63,30 +92,20 @@ function Workspace() {
     const userId = identity.user?.id;
     const [name, setName] = useState("");
     const [slug, setSlug] = useState("");
-    const [savingOrganization, setSavingOrganization] = useState(false);
-    const [error, setError] = useState<string | null>(null);
+    const saving = useAction();
 
-    async function selectOrganization(organizationId: string | null) {
-        setSavingOrganization(true);
-        setError(null);
-        try {
+    const selectOrganization = (organizationId: string | null) =>
+        saving.run(async () => {
             const result = await db.auth.organization.setActive({ organizationId });
             if (result.error) throw new Error(result.error.message);
-        } catch (cause) {
-            setError(cause instanceof Error ? cause.message : String(cause));
-        } finally {
-            setSavingOrganization(false);
-        }
-    }
+        });
 
-    async function createOrganization(event: FormEvent<HTMLFormElement>) {
+    function createOrganization(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
         const organizationName = name.trim();
         const organizationSlug = slug.trim();
-        if (!organizationName || !organizationSlug || savingOrganization) return;
-        setSavingOrganization(true);
-        setError(null);
-        try {
+        if (!organizationName || !organizationSlug) return;
+        void saving.run(async () => {
             const created = await db.auth.organization.create({
                 name: organizationName,
                 slug: organizationSlug,
@@ -99,11 +118,7 @@ function Workspace() {
             if (active.error) throw new Error(active.error.message);
             setName("");
             setSlug("");
-        } catch (cause) {
-            setError(cause instanceof Error ? cause.message : String(cause));
-        } finally {
-            setSavingOrganization(false);
-        }
+        });
     }
 
     return (
@@ -123,7 +138,7 @@ function Workspace() {
                     <select
                         data-testid="organization-select"
                         value={activeOrganizationId ?? ""}
-                        disabled={savingOrganization || organizations.isPending}
+                        disabled={saving.busy || organizations.isPending}
                         onChange={event => void selectOrganization(event.target.value || null)}
                     >
                         <option value="">Choose an organization</option>
@@ -141,7 +156,7 @@ function Workspace() {
                         aria-label="Organization name"
                         value={name}
                         placeholder="Organization name"
-                        disabled={savingOrganization}
+                        disabled={saving.busy}
                         onChange={event => setName(event.target.value)}
                     />
                     <input
@@ -149,56 +164,69 @@ function Workspace() {
                         aria-label="Organization slug"
                         value={slug}
                         placeholder="organization-slug"
-                        disabled={savingOrganization}
+                        disabled={saving.busy}
                         onChange={event => setSlug(event.target.value)}
                     />
                     <button
                         data-testid="create-organization-submit"
                         type="submit"
-                        disabled={savingOrganization || !name.trim() || !slug.trim()}
+                        disabled={saving.busy || !name.trim() || !slug.trim()}
                     >
-                        {savingOrganization ? "Saving..." : "Create organization"}
+                        {saving.busy ? "Saving..." : "Create organization"}
                     </button>
                 </form>
             </section>
 
             {activeOrganizationId && userId ? (
-                <Messages organizationId={activeOrganizationId} userId={userId} />
+                <Messages key={activeOrganizationId} organizationId={activeOrganizationId} userId={userId} />
             ) : (
                 <section className="messages" data-testid="message-list">
                     <p className="empty">Create or choose an organization to start.</p>
                 </section>
             )}
-            {error ? <p className="error">{error}</p> : null}
+            {saving.error ? <p className="error">{saving.error}</p> : null}
         </main>
     );
 }
 
+/** The composer edits the row named by `id`, or composes a new message when it is absent. */
+interface Draft {
+    readonly id?: string;
+    readonly body: string;
+}
+
+const EMPTY: Draft = { body: "" };
+
 function Messages({ organizationId, userId }: { readonly organizationId: string; readonly userId: string }) {
     const { data = [], state } = db.useQuery(listMessages, { limit: 50 });
-    const mutate = db.useMutation(postMessage);
-    const [body, setBody] = useState("");
-    const [sending, setSending] = useState(false);
-    const [error, setError] = useState<string | null>(null);
+    const post = db.useMutation(postMessage);
+    const edit = db.useMutation(editMessage);
+    const remove = db.useMutation(deleteMessage);
+    const [draft, setDraft] = useState(EMPTY);
+    const action = useAction();
+    const rows = useMemo(() => [...data].reverse(), [data]);
+    const loading = state === "pending" || state === "refetching";
+    const failed = state === "error" || state === "closed";
 
-    async function submit(event: FormEvent<HTMLFormElement>) {
+    // A row deleted elsewhere while it is being edited drops the composer back to a new message.
+    useEffect(() => {
+        if (draft.id !== undefined && !data.some(message => message.id === draft.id)) setDraft(EMPTY);
+    }, [data, draft.id]);
+
+    function compose(next: Draft) {
+        setDraft(next);
+        action.reset();
+    }
+
+    function submit(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
-        const message = body.trim();
-        if (!message || sending) return;
-        setSending(true);
-        setError(null);
-        try {
-            await mutate({
-                id: uuidv7(),
-                body: message,
-                clientCreatedAt: Date.now(),
-            });
-            setBody("");
-        } catch (cause) {
-            setError(cause instanceof Error ? cause.message : String(cause));
-        } finally {
-            setSending(false);
-        }
+        const body = draft.body.trim();
+        if (!body) return;
+        void action.run(async () => {
+            if (draft.id !== undefined) await edit({ id: draft.id, body });
+            else await post({ id: uuidv7(), body, clientCreatedAt: Date.now() });
+            setDraft(EMPTY);
+        });
     }
 
     return (
@@ -215,11 +243,36 @@ function Messages({ organizationId, userId }: { readonly organizationId: string;
                 data-organization-id={organizationId}
                 aria-live="polite"
             >
-                {data.length === 0 ? <p className="empty">No messages yet.</p> : null}
-                {[...data].reverse().map(message => (
+                {loading ? <p className="empty">Loading messages...</p> : null}
+                {failed ? (
+                    <p role="alert" className="error">
+                        Could not load messages. Check your connection and organization access.
+                    </p>
+                ) : null}
+                {state === "live" && rows.length === 0 ? <p className="empty">No messages yet.</p> : null}
+                {rows.map(message => (
                     <article key={message.id} className={message.authorId === userId ? "mine" : undefined}>
                         <small>{message.authorId === userId ? "you" : message.authorId}</small>
                         <p>{message.body}</p>
+                        <small>{time.format(message.createdAt)}</small>
+                        {message.authorId === userId ? (
+                            <div className="message-actions">
+                                <button
+                                    type="button"
+                                    disabled={action.busy}
+                                    onClick={() => compose({ id: message.id, body: message.body })}
+                                >
+                                    Edit
+                                </button>
+                                <button
+                                    type="button"
+                                    disabled={action.busy}
+                                    onClick={() => void action.run(() => remove({ id: message.id }))}
+                                >
+                                    Delete
+                                </button>
+                            </div>
+                        ) : null}
                     </article>
                 ))}
             </section>
@@ -227,17 +280,26 @@ function Messages({ organizationId, userId }: { readonly organizationId: string;
             <form onSubmit={submit}>
                 <input
                     aria-label="Message"
-                    value={body}
+                    value={draft.body}
                     maxLength={2_000}
-                    placeholder="Write a message"
-                    disabled={sending}
-                    onChange={event => setBody(event.target.value)}
+                    placeholder={draft.id !== undefined ? "Edit your message" : "Write a message"}
+                    disabled={action.busy}
+                    onChange={event => setDraft({ ...draft, body: event.target.value })}
                 />
-                <button type="submit" disabled={sending || !body.trim()}>
-                    {sending ? "Sending..." : "Send"}
+                <button type="submit" disabled={action.busy || !draft.body.trim()}>
+                    {action.busy ? "Saving..." : draft.id !== undefined ? "Save" : "Send"}
                 </button>
             </form>
-            {error ? <p className="error">{error}</p> : null}
+            {draft.id !== undefined ? (
+                <button type="button" disabled={action.busy} onClick={() => compose(EMPTY)}>
+                    Cancel edit
+                </button>
+            ) : null}
+            {action.error ? (
+                <p role="alert" className="error">
+                    {action.error}
+                </p>
+            ) : null}
         </>
     );
 }
