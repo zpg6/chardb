@@ -1,6 +1,6 @@
 # `CharDB` Rust client
 
-`chardb-client` is the native Rust client for `CharDB` protocol version 3.
+`chardb` is the native Rust client for `CharDB` protocol version 3.
 Blocking and async callers use one session worker, so reconnects, deadlines,
 subscription state, and mutation replay have the same implementation in both
 APIs. Repository CI is configured to test native builds on Windows, macOS, and
@@ -14,14 +14,16 @@ arguments and validates and decodes server output at runtime. A handle is one
 `&'static str`, has no allocation, and writes that string unchanged to protocol
 v3's `ref` field.
 
-`chardb generate`, run in the app directory, writes those handles and their
-Serde types to the path `clients.rust` names on `chardb({...})`. The
-declarations in this document show what the generated module contains; they are
-not typed by hand in practice.
+`chardb api rust --out src/chardb_api.rs`, run in the app directory, writes
+those handles and their Serde types from the app itself. The declarations in
+this document show what the generated module contains; they are not typed by
+hand in practice.
 
 ## Install
 
-This repository includes the crate at `rust/chardb`. It is not public on crates.io yet.
+```sh
+cargo add chardb
+```
 
 The default build includes the blocking client, the runtime-neutral async
 client, and Rustls with Mozilla `WebPKI` roots.
@@ -39,7 +41,7 @@ Available features:
 - `rustls-native-roots` reads the operating system root store. Use it for
   enterprise or private roots installed on the machine.
 - `client` is the shared transport engine. Protocol-only consumers can disable
-  default features and use `chardb_client::wire` without networking code.
+  default features and use `chardb::wire` without networking code.
 
 The crate's minimum supported Rust version is 1.85.
 
@@ -61,7 +63,7 @@ runtime.
 ```rust
 # #[cfg(feature = "introspection")]
 # fn introspection_example() -> Result<(), Box<dyn std::error::Error>> {
-use chardb_client::{Query, introspection::{operation_schema, JsonSchema}};
+use chardb::{Query, introspection::{operation_schema, JsonSchema}};
 
 #[derive(JsonSchema)]
 struct ListArgs {
@@ -97,7 +99,7 @@ the same ID in `hello`.
 # #[cfg(feature = "sync")]
 # mod sync_example {
 use std::time::Duration;
-use chardb_client::{Client, ClientConfig, Mutation, Query, SubscriptionEvent};
+use chardb::{Client, ClientConfig, Mutation, Query, SubscriptionEvent};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize)]
@@ -168,7 +170,7 @@ wakers and work with any executor.
 ```rust,no_run
 # #[cfg(feature = "async")]
 # mod async_example {
-use chardb_client::{AsyncClient, ClientConfig, Mutation, Query, SubscriptionEvent};
+use chardb::{AsyncClient, ClientConfig, Mutation, Query, SubscriptionEvent};
 use serde_json::json;
 
 const LIST_MESSAGES: Query<serde_json::Value, serde_json::Value> =
@@ -208,7 +210,7 @@ Keep handles next to the Rust request and response types they bind. A small
 application can use one `api` module:
 
 ```rust
-use chardb_client::{Mutation, Query};
+use chardb::{Mutation, Query};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize)]
@@ -260,7 +262,7 @@ const LIST_MESSAGES: Query<ListArgs, Message> =
 let rows = client.subscribe(LIST_MESSAGES, &args)?;
 ```
 
-The protocol types in `chardb_client::wire` still expose `ref` as a string.
+The protocol types in `chardb::wire` still expose `ref` as a string.
 That module represents protocol v3 directly and is the escape hatch for tools
 that build messages from a dynamic registry.
 
@@ -332,8 +334,8 @@ thread. A browser on another computer cannot reach the CLI's loopback listener.
 
 ```rust,no_run
 # #[cfg(feature = "browser-login")]
-# fn login() -> chardb_client::Result<()> {
-use chardb_client::browser_login::BrowserLogin;
+# fn login() -> chardb::Result<()> {
+use chardb::browser_login::BrowserLogin;
 use std::time::Duration;
 
 let login = BrowserLogin::start(

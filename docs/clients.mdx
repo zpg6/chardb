@@ -32,7 +32,7 @@ Follow [Live queries](/live-queries) for the client setup and [Files](/files) fo
 
 ## Rust
 
-The `chardb-client` crate lives in `rust/chardb` and provides blocking and runtime-neutral async APIs over protocol version 3. The crate is not public on crates.io yet.
+The `chardb` crate provides blocking and runtime-neutral async APIs over protocol version 3. Add it with `cargo add chardb`.
 
 Typed `Query<Arguments, Row>` and `Mutation<Arguments, Output>` handles bind each server reference to its Serde request and response types. The default build includes both client styles and Rustls; optional features select native roots or JSON Schema introspection.
 

@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use chardb_client::{browser_login::BrowserLogin, ErrorKind};
+use chardb::{browser_login::BrowserLogin, ErrorKind};
 use oauth2::{url::Url, PkceCodeChallenge, PkceCodeVerifier};
 
 fn start() -> BrowserLogin {
@@ -201,7 +201,7 @@ fn idle_and_slow_clients_cannot_extend_the_deadline() {
 #[test]
 #[cfg(feature = "sync")]
 fn callback_exchanges_pkce_and_supplies_jwt_to_client() {
-    use chardb_client::{
+    use chardb::{
         wire::{decode_up, Up},
         Client, ClientConfig,
     };
@@ -306,7 +306,7 @@ fn callback_exchanges_pkce_and_supplies_jwt_to_client() {
 
 #[test]
 fn exchange_rejects_plaintext_and_redacts_provider_errors() {
-    use chardb_client::browser_login::{AuthorizationCode, BrowserAuthorization, RedirectUrl};
+    use chardb::browser_login::{AuthorizationCode, BrowserAuthorization, RedirectUrl};
     use oauth2::{http, HttpRequest, HttpResponse};
     let grant = || BrowserAuthorization {
         code: AuthorizationCode::new("secret-code".to_owned()),
@@ -359,7 +359,7 @@ fn accepts_a_callback_delivered_in_separate_writes() {
 
 #[test]
 fn ipv6_loopback_is_accepted_for_authorization_and_exchange() {
-    use chardb_client::browser_login::{AuthorizationCode, BrowserAuthorization, RedirectUrl};
+    use chardb::browser_login::{AuthorizationCode, BrowserAuthorization, RedirectUrl};
     use oauth2::{http, HttpRequest, HttpResponse, TokenResponse};
 
     for host in ["[::1]", "[0:0:0:0:0:0:0:1]"] {

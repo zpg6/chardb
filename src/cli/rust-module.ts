@@ -1,4 +1,4 @@
-/** Render the `chardb-client` module for an app's handles. */
+/** Render the `chardb` module for an app's handles. */
 
 import type { Column } from "drizzle-orm";
 import { type ApiHandle, type ApiRow, type JsonSchema, pascal as pascalWord, unique, words } from "./api-handles.ts";
@@ -162,7 +162,7 @@ class Generator {
     finish(): string {
         const client = [this.mutations && "Mutation", this.queries && "Query"].filter(Boolean);
         const serde = this.rows.size > 0 ? "{Deserialize, Serialize}" : this.items ? "Serialize" : "";
-        const uses = `${client.length > 0 ? `use chardb_client::${client.length > 1 ? `{${client.join(", ")}}` : client[0]};\n` : ""}${serde ? `use serde::${serde};\n` : ""}`;
+        const uses = `${client.length > 0 ? `use chardb::${client.length > 1 ? `{${client.join(", ")}}` : client[0]};\n` : ""}${serde ? `use serde::${serde};\n` : ""}`;
         return `${RUST_HEADER}\n${uses}${uses ? "\n" : ""}${this.items}${this.queries}${this.mutations}`
             .trimEnd()
             .concat("\n");
