@@ -13,6 +13,7 @@ describe("CharDB HTTP errors", () => {
         expect(httpStatusForCdbError("CDB_FORBIDDEN")).toBe(403);
         expect(httpStatusForCdbError("CDB_REF_NOT_FOUND")).toBe(404);
         expect(httpStatusForCdbError("CDB_STALE_EPOCH")).toBe(409);
+        expect(httpStatusForCdbError("CDB_UNIQUE_VIOLATION")).toBe(409);
         expect(httpStatusForCdbError("CDB_RATE_LIMITED")).toBe(429);
         expect(httpStatusForCdbError("CDB_UNSUPPORTED_FEATURE")).toBe(501);
         expect(httpStatusForCdbError("CDB_SHARD_UNAVAILABLE")).toBe(503);

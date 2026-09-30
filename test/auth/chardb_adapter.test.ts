@@ -12,6 +12,7 @@ import {
     AUTH_READ_IN_MAX_VALUES,
 } from "../../src/auth/sql.ts";
 import { defineAuth, synthesizeAuthSchema } from "../../src/auth/synthesize.ts";
+import { CdbError } from "../../src/errors.ts";
 import { chardb } from "../../src/server/chardb.ts";
 import { Catalog, configureCatalogRuntime } from "../../src/server/do/catalog.ts";
 import { defineMigrations } from "../../src/server/schema-migrations.ts";
@@ -180,6 +181,71 @@ describe("chardbAuthAdapter — Catalog-owned auth storage", () => {
     afterEach(() => {
         harness.close();
         resetAuthRuntime();
+    });
+
+    test("duplicate auth keys reject in the adapter without changing rows or auth epochs", async () => {
+        const adapter = chardbAuthAdapter({ recoveryGeneration: 0, env: { CDB_CATALOG: namespaceFor(harness) } })(
+            auth.options
+        );
+        const now = new Date("2026-09-29T00:00:00Z");
+        const data = {
+            id: "unique-user",
+            name: "Original",
+            email: "unique@example.com",
+            emailVerified: true,
+            createdAt: now,
+            updatedAt: now,
+        };
+        await adapter.create({ model: "user", forceAllowId: true, data });
+        const epochs = () => harness.db.query("SELECT * FROM catalog_epoch ORDER BY scope, scope_id").all();
+        const before = epochs();
+        for (const duplicate of [
+            { ...data, id: "duplicate-email" },
+            { ...data, email: "other@example.com" },
+        ]) {
+            await expect(adapter.create({ model: "user", forceAllowId: true, data: duplicate })).rejects.toMatchObject({
+                name: "CdbError",
+                code: "CDB_UNIQUE_VIOLATION",
+                retryable: false,
+                message: expect.stringContaining("UNIQUE constraint failed:"),
+            });
+            expect(epochs()).toEqual(before);
+        }
+        expect(await adapter.findMany({ model: "user", where: [] })).toMatchObject([
+            { id: data.id, email: data.email },
+        ]);
+        expect(await adapter.count({ model: "user", where: [] })).toBe(1);
+    });
+
+    test("the auth RPC preserves typed failures and rethrows unrelated errors", async () => {
+        for (const failure of [
+            new CdbError({
+                code: "CDB_INVALID_ARGS",
+                message: "bad input: SQLITE_CONSTRAINT (extended: SQLITE_CONSTRAINT_UNIQUE)",
+                hint: "fix the input",
+            }),
+            new Error("UNIQUE constraint failed: not a SQLite error"),
+            new Error("query failed: SQLITE_CONSTRAINT (extended: SQLITE_CONSTRAINT_NOTNULL)"),
+            Object.assign(new Error("database unavailable"), { code: "SQLITE_IOERR" }),
+            "unexpected rejection",
+        ]) {
+            harness.catalog.queryAuth = async () => {
+                throw failure;
+            };
+            const result = harness.catalog.authAdapterRpc({
+                operation: "query",
+                recoveryGeneration: 0,
+                args: { model: "user", where: [] },
+            });
+            if (failure instanceof CdbError) {
+                await expect(result).resolves.toEqual({
+                    ok: false,
+                    error: { code: failure.code, message: failure.message, hint: "fix the input" },
+                });
+            } else {
+                await expect(result).rejects.toBe(failure);
+            }
+        }
     });
 
     test("creates and looks up core and membership rows by non-owner fields", async () => {

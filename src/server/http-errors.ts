@@ -31,6 +31,7 @@ const FORBIDDEN_CODES: ReadonlySet<CdbErrorCode> = new Set([
 
 const CONFLICT_CODES: ReadonlySet<CdbErrorCode> = new Set([
     "CDB_MUT_ID_COLLISION",
+    "CDB_UNIQUE_VIOLATION",
     "CDB_PARTITION_CONTRACT_CHANGED",
     "CDB_RESHARD_PHASE_MISMATCH",
     "CDB_SHARDS_CHANGED",

@@ -45,6 +45,29 @@ fn closed_tags_fields_and_safe_ids_are_enforced() {
 }
 
 #[test]
+fn unique_violations_keep_their_code_and_do_not_retry() {
+    let code = CdbErrorCode::UniqueViolation;
+    assert_eq!(code.as_str(), "CDB_UNIQUE_VIOLATION");
+    assert!(!code.is_retryable());
+    assert_eq!(
+        code.docs_url(),
+        "https://chardb.dev/errors/cdb_unique_violation"
+    );
+    let message = decode_down(
+        r#"{"t":"error","code":"CDB_UNIQUE_VIOLATION","retryable":false,"correlationId":"corr","docs":"https://chardb.dev/errors/cdb_unique_violation"}"#,
+    )
+    .unwrap();
+    assert!(matches!(
+        message,
+        Down::Error {
+            code: CdbErrorCode::UniqueViolation,
+            retryable: false,
+            ..
+        }
+    ));
+}
+
+#[test]
 fn additive_values_follow_the_typescript_normalization_contract() {
     let error = decode_down(
         r#"{"t":"error","code":"CDB_FUTURE","retryable":true,"correlationId":"corr","docs":"future"}"#,

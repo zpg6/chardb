@@ -33,6 +33,7 @@ type Op =
     | "cutover"
     | "route"
     | "mutateAuth"
+    | "authAdapterRpc"
     | "queryAuth"
     | "resolveOrganizationAuthority"
     | "resolveOrganizationAuthorityRoute"

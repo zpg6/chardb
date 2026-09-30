@@ -92,6 +92,76 @@ interface OrganizationAuthority {
 }
 
 describe("workerd Catalog persistence", () => {
+    test("returns duplicate auth writes as errors without throwing across RPC", async () => {
+        const now = Date.parse("2026-09-29T00:00:00Z");
+        const payload = {
+            id: "unique-user",
+            name: "Original",
+            email: "unique@example.com",
+            emailVerified: true,
+            createdAt: now,
+            updatedAt: now,
+        };
+        const mutate = (args: unknown) =>
+            call("authAdapterRpc", {
+                operation: "mutate",
+                recoveryGeneration: 0,
+                args,
+            });
+        expect(await mutate({ model: "user", op: "create", payload })).toMatchObject({ ok: true });
+        for (const duplicate of [
+            { model: "user", op: "create", payload: { ...payload, id: "duplicate-email" } },
+            { model: "user", op: "create", payload: { ...payload, email: "other@example.com" } },
+        ]) {
+            expect(await mutate(duplicate)).toMatchObject({
+                ok: false,
+                error: { code: "CDB_UNIQUE_VIOLATION", message: expect.stringContaining("UNIQUE constraint failed:") },
+            });
+        }
+        expect(
+            await mutate({
+                model: "user",
+                op: "create",
+                payload: { ...payload, id: "second-user", email: "second@example.com" },
+            })
+        ).toMatchObject({ ok: true });
+        expect(
+            await mutate({
+                model: "user",
+                op: "update",
+                where: { id: "second-user" },
+                payload: { email: payload.email },
+            })
+        ).toMatchObject({ ok: false, error: { code: "CDB_UNIQUE_VIOLATION" } });
+        expect(
+            await call("queryAuth", {
+                model: "user",
+                where: [{ field: "id", operator: "eq", value: "second-user" }],
+            })
+        ).toMatchObject([{ id: "second-user", email: "second@example.com" }]);
+        expect(
+            await mutate({
+                model: "user",
+                op: "update",
+                where: { id: payload.id },
+                payload: { name: "Still available" },
+            })
+        ).toMatchObject({ ok: true });
+        expect(
+            await call("queryAuth", {
+                model: "user",
+                where: [{ field: "id", operator: "eq", value: payload.id }],
+            })
+        ).toMatchObject([
+            {
+                ...payload,
+                name: "Still available",
+                createdAt: new Date(now).toISOString(),
+                updatedAt: new Date(now).toISOString(),
+            },
+        ]);
+    });
+
     test("Catalog reconstruction keeps auth tables and stored authority rows", async () => {
         if (!mf) throw new Error("miniflare not initialized");
         const now = Date.parse("2026-08-23T00:00:00Z");
