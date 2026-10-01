@@ -28,6 +28,7 @@ plugin({
           constructor(ctx, env) { this.ctx = ctx; this.env = env; }
         }
         export const waitUntilCalls = [];
+        export const env = {};
         export function waitUntil(promise) { waitUntilCalls.push(promise); }
       `,
             loader: "ts",

@@ -206,16 +206,22 @@ describe("Cloudflare promotion runner", () => {
     test("accepts warm and cold obsolete Durable Object control-plane fences", () => {
         expect(
             classifyObsoleteControlPlane(200, {
-                state: { status: "active", activeVersion: 2, activeEpoch: 3 },
+                state: { status: "active", activeVersion: 3, activeEpoch: 3 },
             })
         ).toBe("warm-v2-catalog");
         expect(
             classifyObsoleteControlPlane(500, {
-                error: "Catalog schema version 2 is newer than packaged version 1",
+                error: "Catalog schema version 3 is newer than packaged version 2",
             })
         ).toBe("cold-v1-journal-fence");
         expect(() => classifyObsoleteControlPlane(200, { state: { activeVersion: 1 } })).toThrow(
             "schema state status drifted"
         );
+        expect(() =>
+            classifyObsoleteControlPlane(200, { state: { status: "active", activeVersion: 2, activeEpoch: 3 } })
+        ).toThrow("activeVersion drifted");
+        expect(() =>
+            classifyObsoleteControlPlane(500, { error: "Catalog schema version 2 is newer than packaged version 1" })
+        ).toThrow("packaged-journal fence");
     });
 });

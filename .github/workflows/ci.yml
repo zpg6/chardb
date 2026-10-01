@@ -148,6 +148,9 @@ jobs:
       - name: Test correctness suite
         run: bun run test:correctness
 
+      - name: Test chat migration histories
+        run: bun test --tsconfig-override ./tsconfig.json example/chat/test/server/worker.test.ts
+
       - name: Smoke-test exact candidate
         shell: bash
         env:

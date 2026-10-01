@@ -27,6 +27,8 @@
         "types": ["bun-types", "@cloudflare/workers-types"],
         "baseUrl": ".",
         "paths": {
+            "drizzle-orm": ["./node_modules/drizzle-orm"],
+            "drizzle-orm/*": ["./node_modules/drizzle-orm/*"],
             "@chardb/core": ["./src/index.ts"],
             "@chardb/core/server": ["./src/server/index.ts"],
             "@chardb/core/files": ["./src/files/index.ts"],

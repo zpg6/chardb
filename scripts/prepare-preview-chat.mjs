@@ -47,7 +47,10 @@ export function renderPreviewWrangler(source, name, releaseSha256) {
     if (!/^[a-f0-9]{64}$/.test(releaseSha256)) throw new Error("preview release SHA-256 is invalid");
     if (!/^name\s*=\s*"[^"]+"$/m.test(source)) throw new Error("chat Wrangler template has no Worker name");
     const replaced = source.replace(/^name\s*=\s*"[^"]+"$/m, `name = ${JSON.stringify(name)}`);
-    return `${replaced.trimEnd()}\n\n[vars]\nCDB_RELEASE_SHA256 = ${JSON.stringify(releaseSha256)}\n`;
+    const release = `CDB_RELEASE_SHA256 = ${JSON.stringify(releaseSha256)}`;
+    return /^\[vars\]\s*$/m.test(replaced)
+        ? replaced.replace(/^\[vars\]\s*$/m, `[vars]\n${release}`)
+        : `${replaced.trimEnd()}\n\n[vars]\n${release}\n`;
 }
 
 function usage() {

@@ -52,4 +52,13 @@ describe("preview deployment preparation", () => {
         );
         expect(() => renderPreviewWrangler(source, "chardb-preview", "bad")).toThrow("SHA-256");
     });
+
+    test("adds release provenance to existing Worker variables", () => {
+        const source =
+            'name = "chat"\n[vars]\nCHAT_SCHEMA_HISTORY = "better-auth-1.7"\n\n[assets]\ndirectory = "dist"\n';
+        const rendered = renderPreviewWrangler(source, "preview", "c".repeat(64));
+        expect(rendered.match(/^\[vars\]$/gm)).toHaveLength(1);
+        expect(rendered).toContain(`[vars]\nCDB_RELEASE_SHA256 = "${"c".repeat(64)}"\nCHAT_SCHEMA_HISTORY`);
+        expect(rendered).toContain('[assets]\ndirectory = "dist"');
+    });
 });

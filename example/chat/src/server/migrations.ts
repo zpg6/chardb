@@ -1,4 +1,8 @@
+import { env } from "cloudflare:workers";
 import { defineMigrations } from "@chardb/core/server";
-import { initialSchema } from "./migrations/v1.ts";
+import { selectMigrationInputs } from "./migrations/history.ts";
 
-export const migrations = defineMigrations([initialSchema]);
+export const migrationInputs = selectMigrationInputs(
+    (env as { readonly CHAT_SCHEMA_HISTORY?: string }).CHAT_SCHEMA_HISTORY
+);
+export const migrations = defineMigrations(migrationInputs);

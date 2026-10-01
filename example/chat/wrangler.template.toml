@@ -5,6 +5,9 @@ main = "src/server/worker.ts"
 compatibility_date = "2026-05-10"
 compatibility_flags = ["nodejs_compat"]
 
+[vars]
+CHAT_SCHEMA_HISTORY = "better-auth-1.7"
+
 # These migrations provision the exported classes. The explicit same-Worker
 # namespaces let the Worker and Durable Objects call each other in every
 # Wrangler and Miniflare execution context.

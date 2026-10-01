@@ -1,4 +1,4 @@
-export const initialSchema = Object.freeze({
+export const initialSchema17 = Object.freeze({
     version: 1,
     name: "initial_schema",
     statements: [
@@ -15,7 +15,7 @@ export const initialSchema = Object.freeze({
         'CREATE TABLE "invitation" ("id" text PRIMARY KEY NOT NULL, "organizationId" text NOT NULL, "email" text NOT NULL, "role" text, "status" text NOT NULL DEFAULT \'pending\', "expiresAt" integer NOT NULL, "createdAt" integer NOT NULL DEFAULT (unixepoch() * 1000), "inviterId" text NOT NULL, CONSTRAINT "invitation_organizationId_organization_id_fk" FOREIGN KEY ("organizationId") REFERENCES "organization" ("id"), CONSTRAINT "invitation_inviterId_user_id_fk" FOREIGN KEY ("inviterId") REFERENCES "user" ("id"))',
         'CREATE INDEX "invitation_organizationId_idx" ON "invitation" ("organizationId")',
         'CREATE INDEX "invitation_email_idx" ON "invitation" ("email")',
-        'CREATE TABLE "jwks" ("id" text PRIMARY KEY NOT NULL, "publicKey" text NOT NULL, "privateKey" text NOT NULL, "createdAt" integer NOT NULL, "expiresAt" integer)',
+        'CREATE TABLE "jwks" ("id" text PRIMARY KEY NOT NULL, "publicKey" text NOT NULL, "privateKey" text NOT NULL, "createdAt" integer NOT NULL, "expiresAt" integer, "alg" text, "crv" text)',
         'CREATE TABLE "member" ("id" text PRIMARY KEY NOT NULL, "organizationId" text NOT NULL, "userId" text NOT NULL, "role" text NOT NULL DEFAULT \'member\', "createdAt" integer NOT NULL, CONSTRAINT "member_organizationId_userId_unique" UNIQUE ("organizationId", "userId"), CONSTRAINT "member_organizationId_organization_id_fk" FOREIGN KEY ("organizationId") REFERENCES "organization" ("id"), CONSTRAINT "member_userId_user_id_fk" FOREIGN KEY ("userId") REFERENCES "user" ("id"))',
         'CREATE INDEX "member_organizationId_idx" ON "member" ("organizationId")',
         'CREATE INDEX "member_userId_idx" ON "member" ("userId")',

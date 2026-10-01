@@ -3,6 +3,7 @@ import { chmod, cp, lstat, mkdir, readFile, readdir, rename, symlink, writeFile 
 import { createServer } from "node:net";
 import path from "node:path";
 import { assertChatBenchmarkReport, compareChatBenchmarkReports } from "./chat-benchmark-report.mjs";
+import { PREVIEW_SCHEMA_VERSION, PREVIEW_UPGRADE_SCHEMA_VERSION } from "./prepare-preview-upgrade.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const REPORT_SCHEMA = "chardb.cloudflare-promotion.report.v1";
@@ -541,12 +542,12 @@ function assertSchemaState(body, expected) {
 
 export function classifyObsoleteControlPlane(status, body) {
     if (status >= 200 && status < 300) {
-        assertSchemaState(body, { status: "active", activeVersion: 2, activeEpoch: 3 });
+        assertSchemaState(body, { status: "active", activeVersion: PREVIEW_UPGRADE_SCHEMA_VERSION, activeEpoch: 3 });
         return "warm-v2-catalog";
     }
     assert(status === 500, "obsolete v1 migration state failed unexpectedly");
     assert(
-        typeof body?.error === "string" && body.error.includes("newer than packaged version 1"),
+        typeof body?.error === "string" && body.error.includes(`newer than packaged version ${PREVIEW_SCHEMA_VERSION}`),
         "obsolete v1 migration state did not report its packaged-journal fence"
     );
     return "cold-v1-journal-fence";
@@ -931,20 +932,22 @@ async function main() {
     await stage("deploy-v1", async () => deploy(v1, "v1", report.results.validate.v1));
 
     await stage("activate-v1", async () => {
-        await waitForHealth(origin, report.candidate.digest, 1);
+        await waitForHealth(origin, report.candidate.digest, PREVIEW_SCHEMA_VERSION);
         const current = await adminRequest(origin, privateState.adminToken, "state");
         const state = current.state;
-        if (state.status === "active" && state.activeVersion === 0) await migrate(v1MigrationId, 1);
-        else if (state.status === "migrating" && state.migrationId === v1MigrationId) await migrate(v1MigrationId, 1);
+        if (state.status === "active" && state.activeVersion === 0)
+            await migrate(v1MigrationId, PREVIEW_SCHEMA_VERSION);
+        else if (state.status === "migrating" && state.migrationId === v1MigrationId)
+            await migrate(v1MigrationId, PREVIEW_SCHEMA_VERSION);
         else
             assert(
-                state.status === "active" && state.activeVersion === 1,
+                state.status === "active" && state.activeVersion === PREVIEW_SCHEMA_VERSION,
                 "target is not at a promotable version-one state"
             );
         const active = await adminRequest(origin, privateState.adminToken, "state");
-        assertSchemaState(active, { status: "active", activeVersion: 1, activeEpoch: 2 });
-        await migrate(v1MigrationId, 1);
-        return { activeVersion: 1, activeEpoch: 2, idempotentRetry: true };
+        assertSchemaState(active, { status: "active", activeVersion: PREVIEW_SCHEMA_VERSION, activeEpoch: 2 });
+        await migrate(v1MigrationId, PREVIEW_SCHEMA_VERSION);
+        return { activeVersion: PREVIEW_SCHEMA_VERSION, activeEpoch: 2, idempotentRetry: true };
     });
 
     await stage("seed-v1", async () => {
@@ -960,7 +963,7 @@ async function main() {
     await stage("deploy-v2", async () => deploy(v2, "v2-initial", report.results.validate.v2));
 
     await stage("fence-before-v2", async () => {
-        await waitForHealth(origin, report.candidate.digest, 2);
+        await waitForHealth(origin, report.candidate.digest, PREVIEW_UPGRADE_SCHEMA_VERSION);
         const session = await loadSession();
         const fence = await assertTrafficClosed(
             origin,
@@ -971,20 +974,20 @@ async function main() {
         session.blockedIds.push(fence.blockedId);
         await saveSession(session);
         const state = await adminRequest(origin, privateState.adminToken, "state");
-        assertSchemaState(state, { status: "active", activeVersion: 1, activeEpoch: 2 });
+        assertSchemaState(state, { status: "active", activeVersion: PREVIEW_SCHEMA_VERSION, activeEpoch: 2 });
         return fence;
     });
 
     await stage("interrupt-v2", async () => {
         const begun = await adminRequest(origin, privateState.adminToken, "begin", {
             migrationId: v2MigrationId,
-            targetVersion: 2,
+            targetVersion: PREVIEW_UPGRADE_SCHEMA_VERSION,
         });
         assertSchemaState(begun, {
             status: "migrating",
-            activeVersion: 1,
+            activeVersion: PREVIEW_SCHEMA_VERSION,
             migrationId: v2MigrationId,
-            targetVersion: 2,
+            targetVersion: PREVIEW_UPGRADE_SCHEMA_VERSION,
         });
         const shards = await adminRequest(
             origin,
@@ -1017,13 +1020,13 @@ async function main() {
     await stage("redeploy-v2", async () => deploy(v2, "v2-interrupted-redeploy", report.results.validate.v2));
 
     await stage("fence-after-redeploy", async () => {
-        await waitForHealth(origin, report.candidate.digest, 2);
+        await waitForHealth(origin, report.candidate.digest, PREVIEW_UPGRADE_SCHEMA_VERSION);
         const state = await adminRequest(origin, privateState.adminToken, "state");
         assertSchemaState(state, {
             status: "migrating",
-            activeVersion: 1,
+            activeVersion: PREVIEW_SCHEMA_VERSION,
             migrationId: v2MigrationId,
-            targetVersion: 2,
+            targetVersion: PREVIEW_UPGRADE_SCHEMA_VERSION,
         });
         const session = await loadSession();
         const fence = await assertTrafficClosed(
@@ -1038,11 +1041,11 @@ async function main() {
     });
 
     await stage("resume-v2", async () => {
-        await migrate(v2MigrationId, 2);
+        await migrate(v2MigrationId, PREVIEW_UPGRADE_SCHEMA_VERSION);
         const state = await adminRequest(origin, privateState.adminToken, "state");
-        assertSchemaState(state, { status: "active", activeVersion: 2, activeEpoch: 3 });
-        await migrate(v2MigrationId, 2);
-        return { activeVersion: 2, activeEpoch: 3, idempotentRetry: true };
+        assertSchemaState(state, { status: "active", activeVersion: PREVIEW_UPGRADE_SCHEMA_VERSION, activeEpoch: 3 });
+        await migrate(v2MigrationId, PREVIEW_UPGRADE_SCHEMA_VERSION);
+        return { activeVersion: PREVIEW_UPGRADE_SCHEMA_VERSION, activeEpoch: 3, idempotentRetry: true };
     });
 
     await stage("verify-v2", async () => {
@@ -1067,7 +1070,7 @@ async function main() {
     await stage("deploy-obsolete-v1", async () => deploy(v1, "obsolete-v1", report.results.validate.v1));
 
     await stage("fence-obsolete-v1", async () => {
-        await waitForHealth(origin, report.candidate.digest, 1);
+        await waitForHealth(origin, report.candidate.digest, PREVIEW_SCHEMA_VERSION);
         const controlPlane = await requestJson(origin, "/_chardb/migrations/state", {
             headers: { authorization: `Bearer ${privateState.adminToken}` },
         });
@@ -1082,11 +1085,15 @@ async function main() {
     await stage("restore-v2", async () => deploy(v2, "v2-final", report.results.validate.v2));
 
     await stage("verify-final", async () => {
-        await waitForHealth(origin, report.candidate.digest, 2);
+        await waitForHealth(origin, report.candidate.digest, PREVIEW_UPGRADE_SCHEMA_VERSION);
         await retryUntil(
             async () => {
                 const state = await adminRequest(origin, privateState.adminToken, "state");
-                return assertSchemaState(state, { status: "active", activeVersion: 2, activeEpoch: 3 });
+                return assertSchemaState(state, {
+                    status: "active",
+                    activeVersion: PREVIEW_UPGRADE_SCHEMA_VERSION,
+                    activeEpoch: 3,
+                });
             },
             { timeoutMs: 60_000, intervalMs: 1_000 }
         );
@@ -1189,7 +1196,9 @@ async function main() {
                 if (!ready) throw new Error(`local Wrangler exited with ${code} before readiness`);
             });
             await Promise.race([
-                waitForHealth(localOrigin, report.candidate.digest, 2, { timeoutMs: 45_000 }).then(value => {
+                waitForHealth(localOrigin, report.candidate.digest, PREVIEW_UPGRADE_SCHEMA_VERSION, {
+                    timeoutMs: 45_000,
+                }).then(value => {
                     ready = true;
                     return value;
                 }),
@@ -1205,7 +1214,7 @@ async function main() {
                     "--id",
                     `${options.migrationPrefix}-local-v2`,
                     "--target",
-                    "2",
+                    String(PREVIEW_UPGRADE_SCHEMA_VERSION),
                     "--concurrency",
                     "2",
                 ],

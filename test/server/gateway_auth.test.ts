@@ -121,9 +121,14 @@ describe("Gateway verified JWT boundary", () => {
         const { catalog, sign } = await signingFixture();
         const now = Math.floor(Date.now() / 1000);
         const valid = await sign();
+        const signatureOffset = valid.lastIndexOf(".") + 1;
+        const tampered =
+            valid.slice(0, signatureOffset) +
+            (valid[signatureOffset] === "A" ? "B" : "A") +
+            valid.slice(signatureOffset + 1);
         const cases = [
             "not-a-jwt",
-            `${valid.slice(0, -2)}xx`,
+            tampered,
             await sign({ expirationTime: now - 1 }),
             await sign({ notBefore: now + 60 }),
             await sign({ issuer: "https://attacker.example" }),
