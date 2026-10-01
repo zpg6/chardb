@@ -802,6 +802,7 @@ async function main() {
         assert(files.has("wrangler.toml") && !files.has("wrangler.jsonc"), "packed consumer must use wrangler.toml");
 
         const packageJson = JSON.parse(await readFile(join(CHAT, "package.json"), "utf8"));
+        packageJson.dependencies["better-auth"] = "1.7.6";
         packageJson.dependencies["@chardb/core"] = `file:${tarball}`;
         packageJson.dependencies["@chardb/react"] = `file:${reactTarball}`;
         await writeFile(join(consumer, "package.json"), `${JSON.stringify(packageJson, null, 4)}\n`);

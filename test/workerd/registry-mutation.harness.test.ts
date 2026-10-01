@@ -70,16 +70,19 @@ afterAll(async () => {
     mf = undefined;
 });
 
-async function mutate(body: {
-    readonly operation: "put" | "routed" | "inspect" | "raw" | "unknown";
-    readonly mutId: string;
-    readonly args: unknown;
-    readonly schemaEpoch?: number;
-}): Promise<{ readonly status: number; readonly body: Record<string, unknown> }> {
+async function mutate(
+    body: {
+        readonly operation: "put" | "routed" | "inspect" | "raw" | "pair" | "unknown";
+        readonly mutId: string;
+        readonly args: unknown;
+        readonly schemaEpoch?: number;
+    },
+    shardName = "configured-registry"
+): Promise<{ readonly status: number; readonly body: Record<string, unknown> }> {
     if (!mf) throw new Error("miniflare not initialized");
     const response = await mf.dispatchFetch("http://example.com/mutate", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "x-fixture-shard": shardName },
         body: JSON.stringify(body),
     });
     return { status: response.status, body: (await response.json()) as Record<string, unknown> };
@@ -106,7 +109,7 @@ async function routingFence(
     return JSON.parse(text) as Record<string, unknown>;
 }
 
-async function inspectAtomicState(): Promise<{
+async function inspectAtomicState(shardName = "configured-registry"): Promise<{
     readonly entries: readonly { readonly id: string; readonly owner_id: string; readonly value: number }[];
     readonly opLogRows: number;
     readonly changeSeq: number;
@@ -114,7 +117,7 @@ async function inspectAtomicState(): Promise<{
     readonly outbox: readonly Record<string, unknown>[];
 }> {
     if (!mf) throw new Error("miniflare not initialized");
-    const response = await mf.dispatchFetch("http://example.com/state");
+    const response = await mf.dispatchFetch("http://example.com/state", { headers: { "x-fixture-shard": shardName } });
     return (await response.json()) as {
         readonly entries: readonly { readonly id: string; readonly owner_id: string; readonly value: number }[];
         readonly opLogRows: number;
@@ -159,6 +162,54 @@ async function registeredProof(
 }
 
 describe("configured Cdb local mutation registry", () => {
+    test("returns typed uniqueness conflicts and rolls back earlier writes and failed op-log rows", async () => {
+        const write = (body: Parameters<typeof mutate>[0]) => mutate(body, "uniqueness-proof");
+        const inspect = () => inspectAtomicState("uniqueness-proof");
+        const original = {
+            operation: "put" as const,
+            mutId: "uniqueness-original",
+            args: { id: "uniqueness-existing", value: 1 },
+        };
+        expect((await write(original)).body).toMatchObject({ ok: true, ran: true });
+        const before = await inspect();
+        const failed = {
+            operation: "pair" as const,
+            mutId: "uniqueness-failed",
+            args: { id: "uniqueness-earlier", secondId: "uniqueness-existing", value: 2 },
+        };
+        const conflict = await write(failed);
+        expect(conflict.body).toMatchObject({
+            ok: false,
+            error: {
+                code: "CDB_UNIQUE_VIOLATION",
+                retryable: false,
+                message: expect.stringContaining("UNIQUE constraint failed"),
+            },
+        });
+        expect(await inspect()).toEqual(before);
+        expect((await write(original)).body).toMatchObject({ ok: true, ran: false });
+        expect(await inspect()).toEqual(before);
+        const notNull = await write({
+            ...failed,
+            args: { ...failed.args, secondId: "uniqueness-notnull", value: null },
+        });
+        expect(notNull.body).toMatchObject({
+            ok: false,
+            error: { code: "CDB_INVARIANT", message: expect.stringContaining("NOT NULL constraint failed") },
+        });
+        expect(await inspect()).toEqual(before);
+        const retried = await write({ ...failed, args: { ...failed.args, secondId: "uniqueness-recovered" } });
+        expect(retried.body).toMatchObject({ ok: true, ran: true });
+        const after = await inspect();
+        expect(after.opLogRows).toBe(before.opLogRows + 1);
+        expect(after.entries).toEqual(
+            expect.arrayContaining([
+                { id: "uniqueness-earlier", owner_id: "registry-user", value: 1 },
+                { id: "uniqueness-recovered", owner_id: "registry-user", value: 2 },
+            ])
+        );
+    });
+
     test("resolves two refs locally, validates synchronously, carries auth, and replays the exact result", async () => {
         const subscribed = await subscribe();
         expect(subscribed).toMatchObject({

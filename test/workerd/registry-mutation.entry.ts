@@ -86,6 +86,19 @@ const rawAfterTyped = api.mutation({
     },
 });
 
+const putPair = api.mutation({
+    ref: "src/probe.ts#putPair",
+    args: z.object({ id: z.string(), secondId: z.string(), value: z.number().nullable() }),
+    handler: (ctx, args) => {
+        ctx.db.insert(entries).values({ id: args.id, ownerId: ctx.auth.userId, value: 1 }).run();
+        ctx.db
+            .insert(entries)
+            .values({ id: args.secondId, ownerId: ctx.auth.userId, value: args.value as number })
+            .run();
+        return args.secondId;
+    },
+});
+
 const registryEntries = api.query({
     ref: "queries.ts#registryEntries",
     args: z.object({ ownerId: z.string(), minimum: z.number().int() }),
@@ -102,9 +115,16 @@ const app = chardb({
     ownership: "user",
     auth: { plugins: [jwt()] },
     schema,
-    api: { putEntry, putRoutedEntry, inspectEntries, rawAfterTyped, registryEntries },
+    api: { putEntry, putRoutedEntry, inspectEntries, rawAfterTyped, putPair, registryEntries },
 });
-const manifest = manifestFromExports({ putEntry, putRoutedEntry, inspectEntries, rawAfterTyped, registryEntries });
+const manifest = manifestFromExports({
+    putEntry,
+    putRoutedEntry,
+    inspectEntries,
+    rawAfterTyped,
+    putPair,
+    registryEntries,
+});
 
 interface StoredEntry extends Record<string, SqlStorageValue> {
     readonly id: string;
@@ -219,7 +239,7 @@ export class InvalidationGateway extends DurableObject<Record<string, never>> {
 }
 
 interface DispatchBody {
-    readonly operation: "put" | "routed" | "inspect" | "raw" | "unknown";
+    readonly operation: "put" | "routed" | "inspect" | "raw" | "pair" | "unknown";
     readonly mutId: string;
     readonly args: unknown;
     readonly schemaEpoch?: number;
@@ -291,7 +311,7 @@ interface RegistryEnv {
 
 export default {
     async fetch(request: Request, env: RegistryEnv): Promise<Response> {
-        const id = env.CDB.idFromName("configured-registry");
+        const id = env.CDB.idFromName(request.headers.get("x-fixture-shard") ?? "configured-registry");
         const gatewayId = env.CDB_GATEWAY.idFromName("registry-gateway");
         const subscribeRequest = subscriptionRequest(gatewayId.toString());
         const stub = env.CDB.get(id) as unknown as {
@@ -388,7 +408,9 @@ export default {
                     ? inspectEntries.__chardbRef
                     : body.operation === "raw"
                       ? rawAfterTyped.__chardbRef
-                      : "src/probe.ts#missing";
+                      : body.operation === "pair"
+                        ? putPair.__chardbRef
+                        : "src/probe.ts#missing";
         const route = routeMutation(manifest, { ref, args: body.args as CdbMutationRequest["args"] }, () => 0);
         if (!route.ok) return Response.json(route);
         const routedUserId =
