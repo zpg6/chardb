@@ -174,6 +174,7 @@ import type {
     CdbVectorizeMutationIndex,
     CdbVectorizeSearchIndex,
 } from "./cdb-vectorize-adapter.ts";
+import { isSqliteUniqueConstraint } from "./sqlite-errors.ts";
 export type { TailTransaction } from "./cdb-reshard-runtime.ts";
 import { renderVectorMutationTriggerSet } from "../vector-triggers.ts";
 import {
@@ -1923,7 +1924,10 @@ export class Cdb extends DurableObject<CdbEnv> {
                 },
             });
         } catch (error) {
-            return { ok: false, error: cdbRuntimeError(error).toJSON() };
+            const projected = isSqliteUniqueConstraint(error)
+                ? new CdbError({ code: "CDB_UNIQUE_VIOLATION", message: error.message })
+                : cdbRuntimeError(error);
+            return { ok: false, error: projected.toJSON() };
         }
         try {
             // Vector outbox delivery can wait on an external Vectorize call. The

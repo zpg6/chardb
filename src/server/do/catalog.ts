@@ -113,6 +113,7 @@ import {
     initializeRecoveryStorage,
 } from "./recovery.ts";
 import { adaptSqlStorage } from "./sql_adapter.ts";
+import { isSqliteUniqueConstraint } from "./sqlite-errors.ts";
 
 export interface CatalogEnv {
     readonly CDB_SHARD?: DurableObjectNamespace;
@@ -485,13 +486,7 @@ export class Catalog extends DurableObject<CatalogEnv> {
                     throw new CdbError({ code: "CDB_INVALID_ARGS", message: "unknown auth adapter operation" });
             }
         } catch (error) {
-            if (
-                error instanceof Error &&
-                !isCdbError(error) &&
-                (("code" in error &&
-                    (error.code === "SQLITE_CONSTRAINT_UNIQUE" || error.code === "SQLITE_CONSTRAINT_PRIMARYKEY")) ||
-                    /: SQLITE_CONSTRAINT \(extended: SQLITE_CONSTRAINT_(?:UNIQUE|PRIMARYKEY)\)$/.test(error.message))
-            ) {
+            if (isSqliteUniqueConstraint(error)) {
                 return { ok: false, error: { code: "CDB_UNIQUE_VIOLATION", message: error.message } };
             }
             if (!isCdbError(error)) throw error;
