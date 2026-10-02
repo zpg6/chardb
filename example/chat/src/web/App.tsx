@@ -157,7 +157,18 @@ function Workspace() {
                         value={name}
                         placeholder="Organization name"
                         disabled={saving.busy}
-                        onChange={event => setName(event.target.value)}
+                        onChange={event => {
+                            const value = event.target.value;
+                            setName(value);
+                            setSlug(
+                                value
+                                    .normalize("NFKD")
+                                    .replace(/\p{M}/gu, "")
+                                    .toLowerCase()
+                                    .replace(/[^a-z0-9]+/g, "-")
+                                    .replace(/^-|-$/g, "")
+                            );
+                        }}
                     />
                     <input
                         data-testid="create-organization-slug"
